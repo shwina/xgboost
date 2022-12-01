@@ -1,5 +1,5 @@
 /*!
- * Copyright 2015-2019 by Contributors
+ * Copyright 2015-2022 by Contributors
  * \file custom_metric.cc
  * \brief This is an example to define plugin of xgboost.
  *  This plugin defines the additional metric function.
@@ -31,18 +31,12 @@ DMLC_REGISTER_PARAMETER(MyLogisticParam);
 // Implement the interface.
 class MyLogistic : public ObjFunction {
  public:
-  void Configure(const std::vector<std::pair<std::string, std::string> >& args) override {
-    param_.UpdateAllowUnknown(args);
-  }
+  void Configure(const Args& args) override { param_.UpdateAllowUnknown(args); }
 
-  struct ObjInfo Task() const override {
-    return {ObjInfo::kRegression, false};
-  }
+  ObjInfo Task() const override { return ObjInfo::kRegression; }
 
-  void GetGradient(const HostDeviceVector<bst_float> &preds,
-                   const MetaInfo &info,
-                   int iter,
-                   HostDeviceVector<GradientPair> *out_gpair) override {
+  void GetGradient(const HostDeviceVector<bst_float>& preds, const MetaInfo& info, int32_t /*iter*/,
+                   HostDeviceVector<GradientPair>* out_gpair) override {
     out_gpair->Resize(preds.Size());
     const std::vector<bst_float>& preds_h = preds.HostVector();
     std::vector<GradientPair>& out_gpair_h = out_gpair->HostVector();

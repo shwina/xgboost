@@ -35,9 +35,9 @@ inline void CheckDeterministicMetricMultiClass(StringView name, int32_t device) 
     }
   }
 
-  auto result = metric->Eval(predts, info, false);
+  auto result = metric->Eval(predts, info);
   for (size_t i = 0; i < 8; ++i) {
-    ASSERT_EQ(metric->Eval(predts, info, false), result);
+    ASSERT_EQ(metric->Eval(predts, info), result);
   }
 }
 }  // namespace xgboost
@@ -84,29 +84,3 @@ TEST(Metric, DeclareUnifiedTest(MultiClassLogLoss)) {
   TestMultiClassLogLoss(GPUIDX);
   xgboost::CheckDeterministicMetricMultiClass(xgboost::StringView{"mlogloss"}, GPUIDX);
 }
-
-#if defined(XGBOOST_USE_NCCL) && defined(__CUDACC__)
-namespace xgboost {
-namespace common {
-TEST(Metric, MGPU_MultiClassError) {
-  if (AllVisibleGPUs() < 2) {
-    LOG(WARNING) << "Not testing in multi-gpu environment.";
-    return;
-  }
-
-  {
-    TestMultiClassError(0);
-  }
-  {
-    TestMultiClassError(1);
-  }
-  {
-    TestMultiClassLogLoss(0);
-  }
-  {
-    TestMultiClassLogLoss(1);
-  }
-}
-}  // namespace common
-}  // namespace xgboost
-#endif  // defined(XGBOOST_USE_NCCL)

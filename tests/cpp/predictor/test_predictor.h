@@ -12,11 +12,7 @@ void TestPredictionFromGradientIndex(std::string name, size_t rows, size_t cols,
                                      std::shared_ptr<DMatrix> p_hist) {
   constexpr size_t kClasses { 3 };
 
-  LearnerModelParam param;
-  param.num_feature = cols;
-  param.num_output_group = kClasses;
-  param.base_score = 0.5;
-
+  LearnerModelParam mparam{MakeMP(cols, .5, kClasses)};
   auto lparam = CreateEmptyGenericParam(0);
 
   std::unique_ptr<Predictor> predictor =
@@ -25,7 +21,7 @@ void TestPredictionFromGradientIndex(std::string name, size_t rows, size_t cols,
 
   GenericParameter ctx;
   ctx.UpdateAllowUnknown(Args{});
-  gbm::GBTreeModel model = CreateTestModel(&param, &ctx, kClasses);
+  gbm::GBTreeModel model = CreateTestModel(&mparam, &ctx, kClasses);
 
   {
     auto p_precise = RandomDataGenerator(rows, cols, 0).GenerateDMatrix();
@@ -61,9 +57,8 @@ void TestTrainingPrediction(size_t rows, size_t bins, std::string tree_method,
                             std::shared_ptr<DMatrix> p_full,
                             std::shared_ptr<DMatrix> p_hist);
 
-void TestInplacePrediction(dmlc::any x, std::string predictor,
-                           bst_row_t rows, bst_feature_t cols,
-                           int32_t device = -1);
+void TestInplacePrediction(std::shared_ptr<DMatrix> x, std::string predictor, bst_row_t rows,
+                           bst_feature_t cols, int32_t device = -1);
 
 void TestPredictionWithLesserFeatures(std::string preditor_name);
 

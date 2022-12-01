@@ -115,7 +115,7 @@ Alternatively, XGBoost also implements the Scikit-Learn interface with
 :py:class:`~xgboost.dask.DaskXGBRanker` and 2 random forest variances.  This wrapper is
 similar to the single node Scikit-Learn interface in xgboost, with dask collection as
 inputs and has an additional ``client`` attribute.  See following sections and
-:ref:`sphx_glr_python_dask-examples` for more examples.
+:ref:`dask-examples` for more examples.
 
 
 ******************
@@ -474,7 +474,6 @@ interface, including callback functions, custom evaluation metric and objective:
         callbacks=[early_stop],
     )
 
-
 .. _tracker-ip:
 
 ***************
@@ -502,6 +501,35 @@ dask config is used:
     # or we can specify the port too
     with dask.config.set({"xgboost.scheduler_address": "192.0.0.100:12345"}):
         reg = dxgb.DaskXGBRegressor()
+
+
+
+************
+IPv6 Support
+************
+
+.. versionadded:: 1.7.0
+
+XGBoost has initial IPv6 support for the dask interface on Linux. Due to most of the
+cluster support for IPv6 is partial (dual stack instead of IPv6 only), we require
+additional user configuration similar to :ref:`tracker-ip` to help XGBoost obtain the
+correct address information:
+
+.. code-block:: python
+
+    import dask
+    from distributed import Client
+    from xgboost import dask as dxgb
+    # let xgboost know the scheduler address, use the same bracket format as dask.
+    with dask.config.set({"xgboost.scheduler_address": "[fd20:b6f:f759:9800::]"}):
+        with Client("[fd20:b6f:f759:9800::]") as client:
+            reg = dxgb.DaskXGBRegressor(tree_method="hist")
+
+
+When GPU is used, XGBoost employs `NCCL <https://developer.nvidia.com/nccl>`_ as the
+underlying communication framework, which may require some additional configuration via
+environment variable depending on the setting of the cluster. Please note that IPv6
+support is Unix only.
 
 
 *****************************************************************************
@@ -536,7 +564,7 @@ Here are some pratices on reducing memory usage with dask and xgboost.
   nice summary.
 
 - When using GPU input, like dataframe loaded by ``dask_cudf``, you can try
-  :py:class:`xgboost.dask.DaskDeviceQuantileDMatrix` as a drop in replacement for ``DaskDMatrix``
+  :py:class:`xgboost.dask.DaskQuantileDMatrix` as a drop in replacement for ``DaskDMatrix``
   to reduce overall memory usage.  See
   :ref:`sphx_glr_python_dask-examples_gpu_training.py` for an example.
 

@@ -3,25 +3,31 @@
 Contributors: https://github.com/dmlc/xgboost/blob/master/CONTRIBUTORS.md
 """
 
+from . import tracker  # noqa
+from . import collective, dask, rabit
 from .core import (
-    DMatrix,
-    DeviceQuantileDMatrix,
     Booster,
     DataIter,
-    build_info,
+    DeviceQuantileDMatrix,
+    DMatrix,
+    QuantileDMatrix,
     _py_version,
+    build_info,
 )
-from .training import train, cv
-from . import rabit  # noqa
-from . import tracker  # noqa
 from .tracker import RabitTracker  # noqa
-from . import dask
+from .training import cv, train
 
 try:
-    from .sklearn import XGBModel, XGBClassifier, XGBRegressor, XGBRanker
-    from .sklearn import XGBRFClassifier, XGBRFRegressor
+    from .config import config_context, get_config, set_config
     from .plotting import plot_importance, plot_tree, to_graphviz
-    from .config import set_config, get_config, config_context
+    from .sklearn import (
+        XGBClassifier,
+        XGBModel,
+        XGBRanker,
+        XGBRegressor,
+        XGBRFClassifier,
+        XGBRFRegressor,
+    )
 except ImportError:
     pass
 
@@ -33,6 +39,7 @@ __all__ = [
     # core
     "DMatrix",
     "DeviceQuantileDMatrix",
+    "QuantileDMatrix",
     "Booster",
     "DataIter",
     "train",
@@ -55,4 +62,6 @@ __all__ = [
     "XGBRFRegressor",
     # dask
     "dask",
+    # collective
+    "collective",
 ]

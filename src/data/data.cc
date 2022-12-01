@@ -2,35 +2,36 @@
  * Copyright 2015-2022 by XGBoost Contributors
  * \file data.cc
  */
+#include "xgboost/data.h"
+
 #include <dmlc/registry.h>
+
 #include <array>
 #include <cstring>
 
-#include "dmlc/io.h"
-#include "xgboost/data.h"
-#include "xgboost/c_api.h"
-#include "xgboost/host_device_vector.h"
-#include "xgboost/logging.h"
-#include "xgboost/version_config.h"
-#include "xgboost/learner.h"
-#include "xgboost/string_view.h"
-
-#include "sparse_page_writer.h"
-#include "simple_dmatrix.h"
-
+#include "../collective/communicator-inl.h"
+#include "../common/group_data.h"
 #include "../common/io.h"
 #include "../common/linalg_op.h"
 #include "../common/math.h"
-#include "../common/version.h"
-#include "../common/group_data.h"
+#include "../common/numeric.h"
 #include "../common/threading_utils.h"
+#include "../common/version.h"
 #include "../data/adapter.h"
-#include "../data/iterative_device_dmatrix.h"
-#include "file_iterator.h"
-
-#include "validation.h"
-#include "./sparse_page_source.h"
+#include "../data/iterative_dmatrix.h"
 #include "./sparse_page_dmatrix.h"
+#include "./sparse_page_source.h"
+#include "dmlc/io.h"
+#include "file_iterator.h"
+#include "simple_dmatrix.h"
+#include "sparse_page_writer.h"
+#include "validation.h"
+#include "xgboost/c_api.h"
+#include "xgboost/host_device_vector.h"
+#include "xgboost/learner.h"
+#include "xgboost/logging.h"
+#include "xgboost/string_view.h"
+#include "xgboost/version_config.h"
 
 namespace dmlc {
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::SparsePage>);
@@ -265,9 +266,11 @@ void MetaInfo::LoadBinary(dmlc::Stream *fi) {
       << " is no longer supported. "
       << "Please process and save your data in current version: "
       << Version::String(Version::Self()) << " again.";
-  CHECK_EQ(major, 1) << msg.str();
-  auto minor = std::get<1>(version);
-  CHECK_GE(minor, 6) << msg.str();
+  CHECK_GE(major, 1) << msg.str();
+  if (major == 1) {
+    auto minor = std::get<1>(version);
+    CHECK_GE(minor, 6) << msg.str();
+  }
 
   const uint64_t expected_num_field = kNumField;
   uint64_t num_field { 0 };
@@ -481,16 +484,7 @@ void MetaInfo::SetInfoFromHost(Context const& ctx, StringView key, Json arr) {
       }
     }
     CHECK(non_dec) << "`qid` must be sorted in non-decreasing order along with data.";
-    group_ptr_.clear();
-    group_ptr_.push_back(0);
-    for (size_t i = 1; i < query_ids.size(); ++i) {
-      if (query_ids[i] != query_ids[i - 1]) {
-        group_ptr_.push_back(i);
-      }
-    }
-    if (group_ptr_.back() != query_ids.size()) {
-      group_ptr_.push_back(query_ids.size());
-    }
+    common::RunLengthEncode(query_ids.cbegin(), query_ids.cend(), &group_ptr_);
     data::ValidateQueryGroup(group_ptr_);
     return;
   }
@@ -520,6 +514,7 @@ void MetaInfo::SetInfoFromHost(Context const& ctx, StringView key, Json arr) {
 
 void MetaInfo::SetInfo(Context const& ctx, const char* key, const void* dptr, DataType dtype,
                        size_t num) {
+  CHECK(key);
   auto proc = [&](auto cast_d_ptr) {
     using T = std::remove_pointer_t<decltype(cast_d_ptr)>;
     auto t = linalg::TensorView<T, 1>(common::Span<T>{cast_d_ptr, num}, {num}, Context::kCpuId);
@@ -594,8 +589,8 @@ void MetaInfo::GetInfo(char const* key, bst_ulong* out_len, DataType dtype,
 
 void MetaInfo::SetFeatureInfo(const char* key, const char **info, const bst_ulong size) {
   if (size != 0 && this->num_col_ != 0) {
-    CHECK_EQ(size, this->num_col_)
-        << "Length of " << key << " must be equal to number of columns.";
+    CHECK_EQ(size, this->num_col_) << "Length of " << key << " must be equal to number of columns.";
+    CHECK(info);
   }
   if (!std::strcmp(key, "feature_type")) {
     feature_type_names.clear();
@@ -798,12 +793,12 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, bool load_row_split,
         size_t pos = cache_shards[i].rfind('.');
         if (pos == std::string::npos) {
           os << cache_shards[i]
-             << ".r" << rabit::GetRank()
-             << "-" <<  rabit::GetWorldSize();
+             << ".r" << collective::GetRank()
+             << "-" <<  collective::GetWorldSize();
         } else {
           os << cache_shards[i].substr(0, pos)
-             << ".r" << rabit::GetRank()
-             << "-" <<  rabit::GetWorldSize()
+             << ".r" << collective::GetRank()
+             << "-" <<  collective::GetWorldSize()
              << cache_shards[i].substr(pos, cache_shards[i].length());
         }
         if (i + 1 != cache_shards.size()) {
@@ -826,8 +821,8 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, bool load_row_split,
 
   int partid = 0, npart = 1;
   if (load_row_split) {
-    partid = rabit::GetRank();
-    npart = rabit::GetWorldSize();
+    partid = collective::GetRank();
+    npart = collective::GetWorldSize();
   } else {
     // test option to load in part
     npart = 1;
@@ -882,18 +877,16 @@ DMatrix* DMatrix::Load(const std::string& uri, bool silent, bool load_row_split,
   /* sync up number of features after matrix loaded.
    * partitioned data will fail the train/val validation check
    * since partitioned data not knowing the real number of features. */
-  rabit::Allreduce<rabit::op::Max>(&dmat->Info().num_col_, 1);
+  collective::Allreduce<collective::Operation::kMax>(&dmat->Info().num_col_, 1);
   return dmat;
 }
-template <typename DataIterHandle, typename DMatrixHandle,
-          typename DataIterResetCallback, typename XGDMatrixCallbackNext>
-DMatrix *DMatrix::Create(DataIterHandle iter, DMatrixHandle proxy,
-                         DataIterResetCallback *reset,
-                         XGDMatrixCallbackNext *next, float missing,
-                         int nthread,
-                         int max_bin) {
-  return new data::IterativeDeviceDMatrix(iter, proxy, reset, next, missing,
-                                          nthread, max_bin);
+
+template <typename DataIterHandle, typename DMatrixHandle, typename DataIterResetCallback,
+          typename XGDMatrixCallbackNext>
+DMatrix* DMatrix::Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
+                         DataIterResetCallback* reset, XGDMatrixCallbackNext* next, float missing,
+                         int nthread, bst_bin_t max_bin) {
+  return new data::IterativeDMatrix(iter, proxy, ref, reset, next, missing, nthread, max_bin);
 }
 
 template <typename DataIterHandle, typename DMatrixHandle,
@@ -907,11 +900,12 @@ DMatrix *DMatrix::Create(DataIterHandle iter, DMatrixHandle proxy,
                                      cache);
 }
 
-template DMatrix *DMatrix::Create<DataIterHandle, DMatrixHandle,
-                                  DataIterResetCallback, XGDMatrixCallbackNext>(
-    DataIterHandle iter, DMatrixHandle proxy, DataIterResetCallback *reset,
-    XGDMatrixCallbackNext *next, float missing, int nthread,
-    int max_bin);
+template DMatrix* DMatrix::Create<DataIterHandle, DMatrixHandle, DataIterResetCallback,
+                                  XGDMatrixCallbackNext>(DataIterHandle iter, DMatrixHandle proxy,
+                                                         std::shared_ptr<DMatrix> ref,
+                                                         DataIterResetCallback* reset,
+                                                         XGDMatrixCallbackNext* next, float missing,
+                                                         int nthread, int max_bin);
 
 template DMatrix *DMatrix::Create<DataIterHandle, DMatrixHandle,
                                   DataIterResetCallback, XGDMatrixCallbackNext>(
@@ -919,8 +913,7 @@ template DMatrix *DMatrix::Create<DataIterHandle, DMatrixHandle,
     XGDMatrixCallbackNext *next, float missing, int32_t n_threads, std::string);
 
 template <typename AdapterT>
-DMatrix* DMatrix::Create(AdapterT* adapter, float missing, int nthread,
-                         const std::string& cache_prefix) {
+DMatrix* DMatrix::Create(AdapterT* adapter, float missing, int nthread, const std::string&) {
   return new data::SimpleDMatrix(adapter, missing, nthread);
 }
 

@@ -45,6 +45,7 @@ including:
 - XGBoost binary buffer file.
 - LIBSVM text format file
 - Comma-separated values (CSV) file
+- Arrow table.
 
 (See :doc:`/tutorials/input_format` for detailed description of text input format.)
 
@@ -146,7 +147,7 @@ XGBoost can use either a list of pairs or a dictionary to set :doc:`parameters <
 
   .. code-block:: python
 
-    evallist = [(dtest, 'eval'), (dtrain, 'train')]
+    evallist = [(dtrain, 'train'), (dtest, 'eval')]
 
 Training
 --------

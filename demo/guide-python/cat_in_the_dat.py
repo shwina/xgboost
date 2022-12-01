@@ -19,13 +19,14 @@ Also, see the tutorial for using XGBoost with categorical data:
 """
 
 from __future__ import annotations
-from time import time
+
 import os
 from tempfile import TemporaryDirectory
+from time import time
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
 
 import xgboost as xgb
 
@@ -63,7 +64,6 @@ def load_cat_in_the_dat() -> tuple[pd.DataFrame, pd.Series]:
 
 params = {
     "tree_method": "gpu_hist",
-    "use_label_encoder": False,
     "n_estimators": 32,
     "colsample_bylevel": 0.7,
 }

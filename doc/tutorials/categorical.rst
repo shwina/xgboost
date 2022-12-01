@@ -36,9 +36,7 @@ parameter ``enable_categorical``:
 .. code:: python
 
   # Supported tree methods are `gpu_hist`, `approx`, and `hist`.
-  clf = xgb.XGBClassifier(
-      tree_method="gpu_hist", enable_categorical=True, use_label_encoder=False
-  )
+  clf = xgb.XGBClassifier(tree_method="gpu_hist", enable_categorical=True)
   # X is the dataframe we created in previous snippet
   clf.fit(X, y)
   # Must use JSON/UBJSON for serialization, otherwise the information is lost.
@@ -86,8 +84,8 @@ values are categories, and the measure is the output leaf value.  Intuitively, w
 group the categories that output similar leaf values. During split finding, we first sort
 the gradient histogram to prepare the contiguous partitions then enumerate the splits
 according to these sorted values. One of the related parameters for XGBoost is
-``max_cat_to_one_hot``, which controls whether one-hot encoding or partitioning should be
-used for each feature, see :doc:`/parameter` for details.
+``max_cat_to_onehot``, which controls whether one-hot encoding or partitioning should be
+used for each feature, see :ref:`cat-param` for details.
 
 
 **********************

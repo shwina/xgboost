@@ -2,20 +2,58 @@ name: XGBoost-Python-Tests
 
 on: [push, pull_request]
 
+permissions:
+  contents: read # to fetch code (actions/checkout)
+
 jobs:
+  python-mypy-lint:
+    runs-on: ubuntu-latest
+    name: Type and format checks for the Python package
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.8"]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+        python-version: ${{ matrix.python-version }}
+        activate-environment: python_lint
+        environment-file: tests/ci_build/conda_env/python_lint.yml
+    - name: Display Conda env
+      shell: bash -l {0}
+      run: |
+        conda info
+        conda list
+    - name: Run mypy
+      shell: bash -l {0}
+      run: |
+        python tests/ci_build/lint_python.py --format=0 --type-check=1 --pylint=0
+    - name: Run formatter
+      shell: bash -l {0}
+      run: |
+        python tests/ci_build/lint_python.py --format=1 --type-check=0 --pylint=0
+    - name: Run pylint
+      shell: bash -l {0}
+      run: |
+        python tests/ci_build/lint_python.py --format=0 --type-check=0 --pylint=1
+
   python-sdist-test:
     runs-on: ${{ matrix.os }}
     name: Test installing XGBoost Python source package on ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-10.15, windows-latest]
+        os: [ubuntu-latest, macos-11, windows-latest]
         python-version: ["3.8"]
     steps:
     - uses: actions/checkout@v2
       with:
         submodules: 'true'
     - name: Install osx system dependencies
-      if: matrix.os == 'macos-10.15'
+      if: matrix.os == 'macos-11'
       run: |
         brew install ninja libomp
     - name: Install Ubuntu system dependencies
@@ -92,10 +130,11 @@ jobs:
   python-tests-on-macos:
     name: Test XGBoost Python package on ${{ matrix.config.os }}
     runs-on: ${{ matrix.config.os }}
+    timeout-minutes: 90
     strategy:
       matrix:
         config:
-          - {os: macos-10.15, python-version "3.8" }
+          - {os: macos-11, python-version "3.8" }
 
     steps:
     - uses: actions/checkout@v2
@@ -133,8 +172,7 @@ jobs:
       run: |
         cd python-package
         python --version
-        python setup.py bdist_wheel --universal
-        pip install ./dist/*.whl
+        python setup.py install
 
     - name: Test Python package
       shell: bash -l {0}

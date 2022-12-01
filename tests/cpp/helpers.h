@@ -4,25 +4,24 @@
 #ifndef XGBOOST_TESTS_CPP_HELPERS_H_
 #define XGBOOST_TESTS_CPP_HELPERS_H_
 
-#include <iostream>
-#include <fstream>
-#include <cstdio>
-#include <string>
-#include <memory>
-#include <vector>
+#include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-#include <gtest/gtest.h>
-
-#include <dmlc/filesystem.h>
 #include <xgboost/base.h>
-#include <xgboost/json.h>
 #include <xgboost/generic_parameters.h>
+#include <xgboost/json.h>
+
+#include <cstdio>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "../../src/common/common.h"
-#include "../../src/gbm/gbtree_model.h"
 #include "../../src/data/array_interface.h"
+#include "../../src/gbm/gbtree_model.h"
+#include "filesystem.h"  // dmlc::TemporaryDirectory
 
 #if defined(__CUDACC__)
 #define DeclareUnifiedTest(name) GPU ## name
@@ -296,10 +295,9 @@ class RandomDataGenerator {
                                            bool float_label = true,
                                            size_t classes = 1) const;
 #if defined(XGBOOST_USE_CUDA)
-  std::shared_ptr<DMatrix> GenerateDeviceDMatrix(bool with_label = false,
-                                                 bool float_label = true,
-                                                 size_t classes = 1);
+  std::shared_ptr<DMatrix> GenerateDeviceDMatrix();
 #endif
+  std::shared_ptr<DMatrix> GenerateQuantileDMatrix();
 };
 
 inline std::vector<float>
@@ -403,36 +401,36 @@ class ArrayIterForTest {
   size_t n_batches_;
 
  public:
-  size_t static constexpr kRows { 1000 };
-  size_t static constexpr kBatches { 100 };
-  size_t static constexpr kCols { 13 };
+  size_t static constexpr Rows() { return 1024; }
+  size_t static constexpr Batches() { return 100; }
+  size_t static constexpr Cols() { return 13; }
 
-  std::string AsArray() const {
-    return interface_;
-  }
+ public:
+  std::string AsArray() const { return interface_; }
 
-  virtual int Next();
-  virtual void Reset() {
-    iter_ = 0;
-  }
+  virtual int Next() = 0;
+  virtual void Reset() { iter_ = 0; }
   size_t Iter() const { return iter_; }
   auto Proxy() -> decltype(proxy_) { return proxy_; }
 
-  explicit ArrayIterForTest(float sparsity, size_t rows = kRows,
-                            size_t cols = kCols, size_t batches = kBatches);
+  explicit ArrayIterForTest(float sparsity, size_t rows, size_t cols, size_t batches);
   virtual ~ArrayIterForTest();
 };
 
 class CudaArrayIterForTest : public ArrayIterForTest {
  public:
-  size_t static constexpr kRows{1000};
-  size_t static constexpr kBatches{100};
-  size_t static constexpr kCols{13};
-
-  explicit CudaArrayIterForTest(float sparsity, size_t rows = kRows,
-                                size_t cols = kCols, size_t batches = kBatches);
+  explicit CudaArrayIterForTest(float sparsity, size_t rows = Rows(), size_t cols = Cols(),
+                                size_t batches = Batches());
   int Next() override;
   ~CudaArrayIterForTest() override = default;
+};
+
+class NumpyArrayIterForTest : public ArrayIterForTest {
+ public:
+  explicit NumpyArrayIterForTest(float sparsity, size_t rows = Rows(), size_t cols = Cols(),
+                                 size_t batches = Batches());
+  int Next() override;
+  ~NumpyArrayIterForTest() override = default;
 };
 
 void DMatrixToCSR(DMatrix *dmat, std::vector<float> *p_data,
@@ -452,6 +450,17 @@ inline int Next(DataIterHandle self) {
 class RMMAllocator;
 using RMMAllocatorPtr = std::unique_ptr<RMMAllocator, void(*)(RMMAllocator*)>;
 RMMAllocatorPtr SetUpRMMResourceForCppTests(int argc, char** argv);
+
+/*
+ * \brief Make learner model param
+ */
+inline LearnerModelParam MakeMP(bst_feature_t n_features, float base_score, uint32_t n_groups,
+                                int32_t device = Context::kCpuId) {
+  size_t shape[1]{1};
+  LearnerModelParam mparam(n_features, linalg::Tensor<float, 1>{{base_score}, shape, device},
+                           n_groups);
+  return mparam;
+}
 
 }  // namespace xgboost
 #endif

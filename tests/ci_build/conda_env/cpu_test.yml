@@ -1,8 +1,9 @@
 name: cpu_test
 channels:
+- defaults
 - conda-forge
 dependencies:
-- python=3.7
+- python=3.8
 - pip
 - wheel
 - pyyaml
@@ -13,17 +14,15 @@ dependencies:
 - scikit-learn
 - pandas
 - matplotlib
-- dask
-- distributed
+- dask>=2022.6
+- distributed>=2022.6
 - python-graphviz
-- hypothesis
+- hypothesis>=6.46
 - astroid
-- sphinx
 - sh
-- recommonmark
 - mock
-- breathe
 - pytest
+- pytest-timeout
 - pytest-cov
 - python-kubernetes
 - urllib3
@@ -34,8 +33,10 @@ dependencies:
 - cffi
 - pyarrow
 - protobuf
-- pyspark>=3.3.0
 - cloudpickle
 - shap
+- modin
 - pip:
   - datatable
+  # TODO: Replace it with pyspark>=3.4 once 3.4 released.
+  - https://ml-team-public-read.s3.us-west-2.amazonaws.com/pyspark-3.4.0.dev0.tar.gz

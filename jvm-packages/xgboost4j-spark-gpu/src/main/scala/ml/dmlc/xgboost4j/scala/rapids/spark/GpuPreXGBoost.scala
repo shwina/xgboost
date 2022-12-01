@@ -16,10 +16,8 @@
 
 package ml.dmlc.xgboost4j.scala.rapids.spark
 
-import scala.collection.Iterator
 import scala.collection.JavaConverters._
 
-import com.nvidia.spark.rapids.{GpuColumnVector}
 import ml.dmlc.xgboost4j.gpu.java.CudfColumnBatch
 import ml.dmlc.xgboost4j.java.nvidia.spark.GpuColumnBatch
 import ml.dmlc.xgboost4j.scala.{Booster, DMatrix, DeviceQuantileDMatrix}
@@ -27,7 +25,6 @@ import ml.dmlc.xgboost4j.scala.spark.params.XGBoostEstimatorCommon
 import ml.dmlc.xgboost4j.scala.spark.{PreXGBoost, PreXGBoostProvider, Watches, XGBoost, XGBoostClassificationModel, XGBoostClassifier, XGBoostExecutionParams, XGBoostRegressionModel, XGBoostRegressor}
 import org.apache.commons.logging.LogFactory
 
-import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.{SparkContext, TaskContext}
 import org.apache.spark.ml.{Estimator, Model}
 import org.apache.spark.rdd.RDD
@@ -61,15 +58,14 @@ class GpuPreXGBoost extends PreXGBoostProvider {
    * @param estimator [[XGBoostClassifier]] or [[XGBoostRegressor]]
    * @param dataset   the training data
    * @param params    all user defined and defaulted params
-   * @return [[XGBoostExecutionParams]] => (Boolean, RDD[[() => Watches]], Option[ RDD[_] ])
-   *         Boolean if building DMatrix in rabit context
+   * @return [[XGBoostExecutionParams]] => (RDD[[() => Watches]], Option[ RDD[_] ])
    *         RDD[() => Watches] will be used as the training input
    *         Option[ RDD[_] ] is the optional cached RDD
    */
   override def buildDatasetToRDD(estimator: Estimator[_],
       dataset: Dataset[_],
       params: Map[String, Any]):
-    XGBoostExecutionParams => (Boolean, RDD[() => Watches], Option[RDD[_]]) = {
+    XGBoostExecutionParams => (RDD[() => Watches], Option[RDD[_]]) = {
     GpuPreXGBoost.buildDatasetToRDD(estimator, dataset, params)
   }
 
@@ -89,6 +85,11 @@ class GpuPreXGBoost extends PreXGBoostProvider {
       schema: StructType): StructType = {
     GpuPreXGBoost.transformSchema(xgboostEstimator, schema)
   }
+}
+
+class BoosterFlag extends Serializable {
+  // indicate if the GPU parameters are set.
+  var isGpuParamsSet = false
 }
 
 object GpuPreXGBoost extends PreXGBoostProvider {
@@ -123,8 +124,7 @@ object GpuPreXGBoost extends PreXGBoostProvider {
    * @param estimator supports XGBoostClassifier and XGBoostRegressor
    * @param dataset   the training data
    * @param params    all user defined and defaulted params
-   * @return [[XGBoostExecutionParams]] => (Boolean, RDD[[() => Watches]], Option[ RDD[_] ])
-   *         Boolean if building DMatrix in rabit context
+   * @return [[XGBoostExecutionParams]] => (RDD[[() => Watches]], Option[ RDD[_] ])
    *         RDD[() => Watches] will be used as the training input to build DMatrix
    *         Option[ RDD[_] ] is the optional cached RDD
    */
@@ -132,7 +132,7 @@ object GpuPreXGBoost extends PreXGBoostProvider {
       estimator: Estimator[_],
       dataset: Dataset[_],
       params: Map[String, Any]):
-    XGBoostExecutionParams => (Boolean, RDD[() => Watches], Option[RDD[_]]) = {
+    XGBoostExecutionParams => (RDD[() => Watches], Option[RDD[_]]) = {
 
     val (Seq(labelName, weightName, marginName), feturesCols, groupName, evalSets) =
       estimator match {
@@ -189,9 +189,9 @@ object GpuPreXGBoost extends PreXGBoostProvider {
 
         // predict and turn to Row
         val predictFunc =
-          (broadcastBooster: Broadcast[Booster], dm: DMatrix, originalRowItr: Iterator[Row]) => {
+          (booster: Booster, dm: DMatrix, originalRowItr: Iterator[Row]) => {
             val Array(rawPredictionItr, probabilityItr, predLeafItr, predContribItr) =
-              m.producePredictionItrs(broadcastBooster, dm)
+              m.producePredictionItrs(booster, dm)
             m.produceResultIterator(originalRowItr, rawPredictionItr, probabilityItr,
               predLeafItr, predContribItr)
           }
@@ -220,9 +220,9 @@ object GpuPreXGBoost extends PreXGBoostProvider {
 
         // predict and turn to Row
         val predictFunc =
-          (broadcastBooster: Broadcast[Booster], dm: DMatrix, originalRowItr: Iterator[Row]) => {
+          (booster: Booster, dm: DMatrix, originalRowItr: Iterator[Row]) => {
             val Array(rawPredictionItr, predLeafItr, predContribItr) =
-              m.producePredictionItrs(broadcastBooster, dm)
+              m.producePredictionItrs(booster, dm)
             m.produceResultIterator(originalRowItr, rawPredictionItr, predLeafItr,
               predContribItr)
           }
@@ -250,6 +250,7 @@ object GpuPreXGBoost extends PreXGBoostProvider {
     val bOrigSchema = sc.broadcast(dataset.schema)
     val bRowSchema = sc.broadcast(schema)
     val bBooster = sc.broadcast(booster)
+    val bBoosterFlag = sc.broadcast(new BoosterFlag)
 
     // Small vars so don't need to broadcast them
     val isLocal = sc.isLocal
@@ -260,6 +261,31 @@ object GpuPreXGBoost extends PreXGBoostProvider {
       tableIters =>
         // UnsafeProjection is not serializable so do it on the executor side
         val toUnsafe = UnsafeProjection.create(bOrigSchema.value)
+
+        // booster is visible for all spark tasks in the same executor
+        val booster = bBooster.value
+        val boosterFlag = bBoosterFlag.value
+
+        synchronized {
+          // there are two kind of race conditions,
+          // 1. multi-taskes set parameters at a time
+          // 2. one task sets parameter and another task reads the parameter
+          // both of them can cause potential un-expected behavior, moreover,
+          //      it may cause executor crash
+          // So add synchronized to allow only one task to set parameter if it is not set.
+          // and rely on BlockManager to ensure the same booster only be called once to
+          // set parameter.
+          if (!boosterFlag.isGpuParamsSet) {
+            // set some params of gpu related to booster
+            // - gpu id
+            // - predictor: Force to gpu predictor since native doesn't save predictor.
+            val gpuId = if (!isLocal) XGBoost.getGPUAddrFromResources else 0
+            booster.setParam("gpu_id", gpuId.toString)
+            booster.setParam("predictor", "gpu_predictor")
+            logger.info("GPU transform on device: " + gpuId)
+            boosterFlag.isGpuParamsSet = true;
+          }
+        }
 
         // Iterator on Row
         new Iterator[Row] {
@@ -272,14 +298,6 @@ object GpuPreXGBoost extends PreXGBoostProvider {
 
           // Iterator on Row
           var iter: Iterator[Row] = null
-
-          // set some params of gpu related to booster
-          // - gpu id
-          // - predictor: Force to gpu predictor since native doesn't save predictor.
-          val gpuId = if (!isLocal) XGBoost.getGPUAddrFromResources else 0
-          bBooster.value.setParam("gpu_id", gpuId.toString)
-          bBooster.value.setParam("predictor", "gpu_predictor")
-          logger.info("GPU transform on device: " + gpuId)
 
           TaskContext.get().addTaskCompletionListener[Unit](_ => {
             closeCurrentBatch() // close the last ColumnarBatch
@@ -311,12 +329,12 @@ object GpuPreXGBoost extends PreXGBoostProvider {
                   } else {
                     try {
                       currentBatch = new ColumnarBatch(
-                        GpuColumnVector.extractColumns(table, dataTypes).map(_.copyToHost()),
+                        GpuUtils.extractBatchToHost(table, dataTypes),
                         table.getRowCount().toInt)
                       val rowIterator = currentBatch.rowIterator().asScala
                         .map(toUnsafe)
                         .map(converter(_))
-                      predictFunc(bBooster, dm, rowIterator)
+                      predictFunc(booster, dm, rowIterator)
 
                     } finally {
                       dm.delete()

@@ -1,15 +1,16 @@
 /*!
- * Copyright 2017-2020 XGBoost contributors
+ * Copyright 2017-2022 XGBoost contributors
  */
-#include <dmlc/filesystem.h>
 #include <gtest/gtest.h>
 #include <xgboost/predictor.h>
 
+#include "../../../src/data/adapter.h"
+#include "../../../src/data/proxy_dmatrix.h"
+#include "../../../src/gbm/gbtree.h"
+#include "../../../src/gbm/gbtree_model.h"
+#include "../filesystem.h"  // dmlc::TemporaryDirectory
 #include "../helpers.h"
 #include "test_predictor.h"
-#include "../../../src/gbm/gbtree_model.h"
-#include "../../../src/gbm/gbtree.h"
-#include "../../../src/data/adapter.h"
 
 namespace xgboost {
 TEST(CpuPredictor, Basic) {
@@ -20,14 +21,11 @@ TEST(CpuPredictor, Basic) {
   size_t constexpr kRows = 5;
   size_t constexpr kCols = 5;
 
-  LearnerModelParam param;
-  param.num_feature = kCols;
-  param.base_score = 0.0;
-  param.num_output_group = 1;
+  LearnerModelParam mparam{MakeMP(kCols, .0, 1)};
 
   GenericParameter ctx;
   ctx.UpdateAllowUnknown(Args{});
-  gbm::GBTreeModel model = CreateTestModel(&param, &ctx);
+  gbm::GBTreeModel model = CreateTestModel(&mparam, &ctx);
 
   auto dmat = RandomDataGenerator(kRows, kCols, 0).GenerateDMatrix();
 
@@ -103,14 +101,11 @@ TEST(CpuPredictor, ExternalMemory) {
   std::unique_ptr<Predictor> cpu_predictor =
       std::unique_ptr<Predictor>(Predictor::Create("cpu_predictor", &lparam));
 
-  LearnerModelParam param;
-  param.base_score = 0;
-  param.num_feature = dmat->Info().num_col_;
-  param.num_output_group = 1;
+  LearnerModelParam mparam{MakeMP(dmat->Info().num_col_, .0, 1)};
 
   GenericParameter ctx;
   ctx.UpdateAllowUnknown(Args{});
-  gbm::GBTreeModel model = CreateTestModel(&param, &ctx);
+  gbm::GBTreeModel model = CreateTestModel(&mparam, &ctx);
 
   // Test predict batch
   PredictionCacheEntry out_predictions;
@@ -172,9 +167,12 @@ TEST(CpuPredictor, InplacePredict) {
     HostDeviceVector<float> data;
     gen.GenerateDense(&data);
     ASSERT_EQ(data.Size(), kRows * kCols);
-    std::shared_ptr<data::DenseAdapter> x{
-      new data::DenseAdapter(data.HostPointer(), kRows, kCols)};
-    TestInplacePrediction(x, "cpu_predictor", kRows, kCols, -1);
+    std::shared_ptr<data::DMatrixProxy> x{new data::DMatrixProxy{}};
+    auto array_interface = GetArrayInterface(&data, kRows, kCols);
+    std::string arr_str;
+    Json::Dump(array_interface, &arr_str);
+    x->SetArrayData(arr_str.data());
+    TestInplacePrediction(x, "cpu_predictor", kRows, kCols, Context::kCpuId);
   }
 
   {
@@ -182,25 +180,26 @@ TEST(CpuPredictor, InplacePredict) {
     HostDeviceVector<bst_row_t> rptrs;
     HostDeviceVector<bst_feature_t> columns;
     gen.GenerateCSR(&data, &rptrs, &columns);
-    std::shared_ptr<data::CSRAdapter> x{new data::CSRAdapter(
-        rptrs.HostPointer(), columns.HostPointer(), data.HostPointer(), kRows,
-        data.Size(), kCols)};
-    TestInplacePrediction(x, "cpu_predictor", kRows, kCols, -1);
+    auto data_interface = GetArrayInterface(&data, kRows * kCols, 1);
+    auto rptr_interface = GetArrayInterface(&rptrs, kRows + 1, 1);
+    auto col_interface = GetArrayInterface(&columns, kRows * kCols, 1);
+    std::string data_str, rptr_str, col_str;
+    Json::Dump(data_interface, &data_str);
+    Json::Dump(rptr_interface, &rptr_str);
+    Json::Dump(col_interface, &col_str);
+    std::shared_ptr<data::DMatrixProxy> x{new data::DMatrixProxy};
+    x->SetCSRData(rptr_str.data(), col_str.data(), data_str.data(), kCols, true);
+    TestInplacePrediction(x, "cpu_predictor", kRows, kCols, Context::kCpuId);
   }
 }
 
 void TestUpdatePredictionCache(bool use_subsampling) {
   size_t constexpr kRows = 64, kCols = 16, kClasses = 4;
-  LearnerModelParam mparam;
-  mparam.num_feature = kCols;
-  mparam.num_output_group = kClasses;
-  mparam.base_score = 0;
-
-  GenericParameter gparam;
-  gparam.Init(Args{});
+  LearnerModelParam mparam{MakeMP(kCols, .0, kClasses)};
+  Context ctx;
 
   std::unique_ptr<gbm::GBTree> gbm;
-  gbm.reset(static_cast<gbm::GBTree*>(GradientBooster::Create("gbtree", &gparam, &mparam)));
+  gbm.reset(static_cast<gbm::GBTree*>(GradientBooster::Create("gbtree", &ctx, &mparam)));
   std::map<std::string, std::string> cfg;
   cfg["tree_method"] = "hist";
   cfg["predictor"]   = "cpu_predictor";
@@ -222,7 +221,7 @@ void TestUpdatePredictionCache(bool use_subsampling) {
   PredictionCacheEntry predtion_cache;
   predtion_cache.predictions.Resize(kRows*kClasses, 0);
   // after one training iteration predtion_cache is filled with cached in QuantileHistMaker::Builder prediction values
-  gbm->DoBoost(dmat.get(), &gpair, &predtion_cache);
+  gbm->DoBoost(dmat.get(), &gpair, &predtion_cache, nullptr);
 
   PredictionCacheEntry out_predictions;
   // perform fair prediction on the same input data, should be equal to cached result
@@ -233,6 +232,17 @@ void TestUpdatePredictionCache(bool use_subsampling) {
   for (size_t i = 0; i < out_predictions_h.size(); ++i) {
     ASSERT_NEAR(out_predictions_h[i], predtion_cache_from_train[i], kRtEps);
   }
+}
+
+TEST(CPUPredictor, GHistIndex) {
+  size_t constexpr kRows{128}, kCols{16}, kBins{64};
+  auto p_hist = RandomDataGenerator{kRows, kCols, 0.0}.Bins(kBins).GenerateQuantileDMatrix();
+  HostDeviceVector<float> storage(kRows * kCols);
+  auto columnar = RandomDataGenerator{kRows, kCols, 0.0}.GenerateArrayInterface(&storage);
+  auto adapter = data::ArrayAdapter(columnar.c_str());
+  std::shared_ptr<DMatrix> p_full{
+      DMatrix::Create(&adapter, std::numeric_limits<float>::quiet_NaN(), 1)};
+  TestTrainingPrediction(kRows, kBins, "hist", p_full, p_hist);
 }
 
 TEST(CPUPredictor, CategoricalPrediction) {

@@ -6,9 +6,10 @@
 #include <limits>
 #include <utility>
 
+#include "../collective/communicator-inl.h"
+#include "../data/adapter.h"
 #include "categorical.h"
 #include "hist_util.h"
-#include "rabit/rabit.h"
 
 namespace xgboost {
 namespace common {
@@ -29,72 +30,6 @@ SketchContainerImpl<WQSketch>::SketchContainerImpl(std::vector<bst_row_t> column
   CHECK_GE(n_threads_, 1);
   categories_.resize(columns_size_.size());
   has_categorical_ = std::any_of(feature_types_.cbegin(), feature_types_.cend(), IsCatOp{});
-}
-
-template <typename WQSketch>
-std::vector<bst_row_t> SketchContainerImpl<WQSketch>::CalcColumnSize(SparsePage const &batch,
-                                                                     bst_feature_t const n_columns,
-                                                                     size_t const nthreads) {
-  auto page = batch.GetView();
-  std::vector<std::vector<bst_row_t>> column_sizes(nthreads);
-  for (auto &column : column_sizes) {
-    column.resize(n_columns, 0);
-  }
-
-  ParallelFor(page.Size(), nthreads, [&](omp_ulong i) {
-    auto &local_column_sizes = column_sizes.at(omp_get_thread_num());
-    auto row = page[i];
-    auto const *p_row = row.data();
-    for (size_t j = 0; j < row.size(); ++j) {
-      local_column_sizes.at(p_row[j].index)++;
-    }
-  });
-  std::vector<bst_row_t> entries_per_columns(n_columns, 0);
-  ParallelFor(n_columns, nthreads, [&](bst_omp_uint i) {
-    for (auto const &thread : column_sizes) {
-      entries_per_columns[i] += thread[i];
-    }
-  });
-  return entries_per_columns;
-}
-
-template <typename WQSketch>
-std::vector<bst_feature_t> SketchContainerImpl<WQSketch>::LoadBalance(SparsePage const &batch,
-                                                                      bst_feature_t n_columns,
-                                                                      size_t const nthreads) {
-  /* Some sparse datasets have their mass concentrating on small number of features.  To
-   * avoid waiting for a few threads running forever, we here distribute different number
-   * of columns to different threads according to number of entries.
-   */
-  auto page = batch.GetView();
-  size_t const total_entries = page.data.size();
-  size_t const entries_per_thread = DivRoundUp(total_entries, nthreads);
-
-  std::vector<std::vector<bst_row_t>> column_sizes(nthreads);
-  for (auto& column : column_sizes) {
-    column.resize(n_columns, 0);
-  }
-  std::vector<bst_row_t> entries_per_columns =
-      CalcColumnSize(batch, n_columns, nthreads);
-  std::vector<bst_feature_t> cols_ptr(nthreads + 1, 0);
-  size_t count {0};
-  size_t current_thread {1};
-
-  for (auto col : entries_per_columns) {
-    cols_ptr.at(current_thread)++;  // add one column to thread
-    count += col;
-    CHECK_LE(count, total_entries);
-    if (count > entries_per_thread) {
-      current_thread++;
-      count = 0;
-      cols_ptr.at(current_thread) = cols_ptr[current_thread-1];
-    }
-  }
-  // Idle threads.
-  for (; current_thread < cols_ptr.size() - 1; ++current_thread) {
-    cols_ptr[current_thread+1] = cols_ptr[current_thread];
-  }
-  return cols_ptr;
 }
 
 namespace {
@@ -143,53 +78,36 @@ void SketchContainerImpl<WQSketch>::PushRowPage(SparsePage const &page, MetaInfo
     CHECK_EQ(weights.size(), info.num_row_);
   }
 
-  auto batch = page.GetView();
-  // Parallel over columns.  Each thread owns a set of consecutive columns.
-  auto const ncol = static_cast<bst_feature_t>(info.num_col_);
-  auto thread_columns_ptr = LoadBalance(page, info.num_col_, n_threads_);
-
-  dmlc::OMPException exc;
-#pragma omp parallel num_threads(n_threads_)
-  {
-    exc.Run([&]() {
-      auto tid = static_cast<uint32_t>(omp_get_thread_num());
-      auto const begin = thread_columns_ptr[tid];
-      auto const end = thread_columns_ptr[tid + 1];
-
-      // do not iterate if no columns are assigned to the thread
-      if (begin < end && end <= ncol) {
-        for (size_t i = 0; i < batch.Size(); ++i) {
-          size_t const ridx = page.base_rowid + i;
-          SparsePage::Inst const inst = batch[i];
-          auto w = weights.empty() ? 1.0f : weights[ridx];
-          auto p_inst = inst.data();
-          if (is_dense) {
-            for (size_t ii = begin; ii < end; ii++) {
-              if (IsCat(feature_types_, ii)) {
-                categories_[ii].emplace(p_inst[ii].fvalue);
-              } else {
-                sketches_[ii].Push(p_inst[ii].fvalue, w);
-              }
-            }
-          } else {
-            for (size_t i = 0; i < inst.size(); ++i) {
-              auto const& entry = p_inst[i];
-              if (entry.index >= begin && entry.index < end) {
-                if (IsCat(feature_types_, entry.index)) {
-                  categories_[entry.index].emplace(entry.fvalue);
-                } else {
-                  sketches_[entry.index].Push(entry.fvalue, w);
-                }
-              }
-            }
-          }
-        }
-      }
-    });
-  }
-  exc.Rethrow();
+  auto batch = data::SparsePageAdapterBatch{page.GetView()};
+  this->PushRowPageImpl(batch, page.base_rowid, OptionalWeights{weights}, page.data.Size(),
+                        info.num_col_, is_dense, [](auto) { return true; });
   monitor_.Stop(__func__);
 }
+
+template <typename Batch>
+void HostSketchContainer::PushAdapterBatch(Batch const &batch, size_t base_rowid,
+                                           MetaInfo const &info, float missing) {
+  auto const &h_weights =
+      (use_group_ind_ ? detail::UnrollGroupWeights(info) : info.weights_.HostVector());
+
+  auto is_valid = data::IsValidFunctor{missing};
+  auto weights = OptionalWeights{Span<float const>{h_weights}};
+  // the nnz from info is not reliable as sketching might be the first place to go through
+  // the data.
+  auto is_dense = info.num_nonzero_ == info.num_col_ * info.num_row_;
+  this->PushRowPageImpl(batch, base_rowid, weights, info.num_nonzero_, info.num_col_, is_dense,
+                        is_valid);
+}
+
+#define INSTANTIATE(_type)                                          \
+  template void HostSketchContainer::PushAdapterBatch<data::_type>( \
+      data::_type const &batch, size_t base_rowid, MetaInfo const &info, float missing);
+
+INSTANTIATE(ArrayAdapterBatch)
+INSTANTIATE(CSRArrayAdapterBatch)
+INSTANTIATE(CSCAdapterBatch)
+INSTANTIATE(DataTableAdapterBatch)
+INSTANTIATE(SparsePageAdapterBatch)
 
 namespace {
 /**
@@ -226,8 +144,8 @@ struct QuantileAllreduce {
 void AllreduceCategories(Span<FeatureType const> feature_types, int32_t n_threads,
                          std::vector<std::set<float>> *p_categories) {
   auto &categories = *p_categories;
-  auto world_size = rabit::GetWorldSize();
-  auto rank = rabit::GetRank();
+  auto world_size = collective::GetWorldSize();
+  auto rank = collective::GetRank();
   if (world_size == 1) {
     return;
   }
@@ -245,7 +163,8 @@ void AllreduceCategories(Span<FeatureType const> feature_types, int32_t n_thread
   std::vector<size_t> global_feat_ptrs(feature_ptr.size() * world_size, 0);
   size_t feat_begin = rank * feature_ptr.size();  // pointer to current worker
   std::copy(feature_ptr.begin(), feature_ptr.end(), global_feat_ptrs.begin() + feat_begin);
-  rabit::Allreduce<rabit::op::Sum>(global_feat_ptrs.data(), global_feat_ptrs.size());
+  collective::Allreduce<collective::Operation::kSum>(global_feat_ptrs.data(),
+                                                     global_feat_ptrs.size());
 
   // move all categories into a flatten vector to prepare for allreduce
   size_t total = feature_ptr.back();
@@ -258,7 +177,8 @@ void AllreduceCategories(Span<FeatureType const> feature_types, int32_t n_thread
   // indptr for indexing workers
   std::vector<size_t> global_worker_ptr(world_size + 1, 0);
   global_worker_ptr[rank + 1] = total;  // shift 1 to right for constructing the indptr
-  rabit::Allreduce<rabit::op::Sum>(global_worker_ptr.data(), global_worker_ptr.size());
+  collective::Allreduce<collective::Operation::kSum>(global_worker_ptr.data(),
+                                                     global_worker_ptr.size());
   std::partial_sum(global_worker_ptr.cbegin(), global_worker_ptr.cend(), global_worker_ptr.begin());
   // total number of categories in all workers with all features
   auto gtotal = global_worker_ptr.back();
@@ -270,7 +190,8 @@ void AllreduceCategories(Span<FeatureType const> feature_types, int32_t n_thread
   CHECK_EQ(rank_size, total);
   std::copy(flatten.cbegin(), flatten.cend(), global_categories.begin() + rank_begin);
   // gather values from all workers.
-  rabit::Allreduce<rabit::op::Sum>(global_categories.data(), global_categories.size());
+  collective::Allreduce<collective::Operation::kSum>(global_categories.data(),
+                                                     global_categories.size());
   QuantileAllreduce<float> allreduce_result{global_categories, global_worker_ptr, global_feat_ptrs,
                                             categories.size()};
   ParallelFor(categories.size(), n_threads, [&](auto fidx) {
@@ -299,8 +220,8 @@ void SketchContainerImpl<WQSketch>::GatherSketchInfo(
     std::vector<typename WQSketch::Entry> *p_global_sketches) {
   auto &worker_segments = *p_worker_segments;
   worker_segments.resize(1, 0);
-  auto world = rabit::GetWorldSize();
-  auto rank = rabit::GetRank();
+  auto world = collective::GetWorldSize();
+  auto rank = collective::GetRank();
   auto n_columns = sketches_.size();
 
   // get the size of each feature.
@@ -319,7 +240,7 @@ void SketchContainerImpl<WQSketch>::GatherSketchInfo(
   std::partial_sum(sketch_size.cbegin(), sketch_size.cend(), sketches_scan.begin() + beg_scan + 1);
 
   // Gather all column pointers
-  rabit::Allreduce<rabit::op::Sum>(sketches_scan.data(), sketches_scan.size());
+  collective::Allreduce<collective::Operation::kSum>(sketches_scan.data(), sketches_scan.size());
   for (int32_t i = 0; i < world; ++i) {
     size_t back = (i + 1) * (n_columns + 1) - 1;
     auto n_entries = sketches_scan.at(back);
@@ -347,7 +268,7 @@ void SketchContainerImpl<WQSketch>::GatherSketchInfo(
 
   static_assert(sizeof(typename WQSketch::Entry) / 4 == sizeof(float),
                 "Unexpected size of sketch entry.");
-  rabit::Allreduce<rabit::op::Sum>(
+  collective::Allreduce<collective::Operation::kSum>(
       reinterpret_cast<float *>(global_sketches.data()),
       global_sketches.size() * sizeof(typename WQSketch::Entry) / sizeof(float));
 }
@@ -359,7 +280,7 @@ void SketchContainerImpl<WQSketch>::AllReduce(
   monitor_.Start(__func__);
 
   size_t n_columns = sketches_.size();
-  rabit::Allreduce<rabit::op::Max>(&n_columns, 1);
+  collective::Allreduce<collective::Operation::kMax>(&n_columns, 1);
   CHECK_EQ(n_columns, sketches_.size()) << "Number of columns differs across workers";
 
   AllreduceCategories(feature_types_, n_threads_, &categories_);
@@ -373,7 +294,8 @@ void SketchContainerImpl<WQSketch>::AllReduce(
 
   // Prune the intermediate num cuts for synchronization.
   std::vector<bst_row_t> global_column_size(columns_size_);
-  rabit::Allreduce<rabit::op::Sum>(global_column_size.data(), global_column_size.size());
+  collective::Allreduce<collective::Operation::kSum>(global_column_size.data(),
+                                                     global_column_size.size());
 
   ParallelFor(sketches_.size(), n_threads_, [&](size_t i) {
     int32_t intermediate_num_cuts = static_cast<int32_t>(
@@ -393,7 +315,7 @@ void SketchContainerImpl<WQSketch>::AllReduce(
     num_cuts[i] = intermediate_num_cuts;
   });
 
-  auto world = rabit::GetWorldSize();
+  auto world = collective::GetWorldSize();
   if (world == 1) {
     monitor_.Stop(__func__);
     return;
@@ -518,11 +440,10 @@ void SketchContainerImpl<WQSketch>::MakeCuts(HistogramCuts* cuts) {
 template class SketchContainerImpl<WQuantileSketch<float, float>>;
 template class SketchContainerImpl<WXQuantileSketch<float, float>>;
 
-HostSketchContainer::HostSketchContainer(int32_t max_bins, MetaInfo const &info,
+HostSketchContainer::HostSketchContainer(int32_t max_bins, common::Span<FeatureType const> ft,
                                          std::vector<size_t> columns_size, bool use_group,
-                                         Span<float const> hessian, int32_t n_threads)
-    : SketchContainerImpl{columns_size, max_bins, info.feature_types.ConstHostSpan(), use_group,
-                          n_threads} {
+                                         int32_t n_threads)
+    : SketchContainerImpl{columns_size, max_bins, ft, use_group, n_threads} {
   monitor_.Init(__func__);
   ParallelFor(sketches_.size(), n_threads_, Sched::Auto(), [&](auto i) {
     auto n_bins = std::min(static_cast<size_t>(max_bins_), columns_size_[i]);

@@ -1,11 +1,12 @@
 import sys
-import pytest
 
 import numpy as np
-import xgboost as xgb
+import pytest
+from hypothesis import assume, given, settings, strategies
 from xgboost.compat import PANDAS_INSTALLED
 
-from hypothesis import given, strategies, assume, settings
+import xgboost as xgb
+from xgboost import testing
 
 if PANDAS_INSTALLED:
     from hypothesis.extra.pandas import column, data_frames, range_indexes
@@ -16,8 +17,8 @@ else:
 
 sys.path.append("tests/python")
 import testing as tm
+from test_predict import run_predict_leaf  # noqa
 from test_predict import run_threaded_predict  # noqa
-from test_predict import run_predict_leaf      # noqa
 
 rng = np.random.RandomState(1994)
 
@@ -31,6 +32,8 @@ predict_parameter_strategy = strategies.fixed_dictionaries({
     'max_depth': strategies.integers(1, 8),
     'num_parallel_tree': strategies.sampled_from([1, 4]),
 })
+
+pytestmark = testing.timeout(20)
 
 
 class TestGPUPredict:
@@ -148,10 +151,9 @@ class TestGPUPredict:
         from_dmatrix = booster.predict(dtrain)
         cp.testing.assert_allclose(from_inplace, from_dmatrix)
 
-    @pytest.mark.skipif(**tm.no_cupy())
-    def test_inplace_predict_cupy(self):
+    def run_inplace_predict_cupy(self, device: int) -> None:
         import cupy as cp
-        cp.cuda.runtime.setDevice(0)
+        cp.cuda.runtime.setDevice(device)
         rows = 1000
         cols = 10
         missing = 11            # set to integer for testing
@@ -166,15 +168,17 @@ class TestGPUPredict:
 
         dtrain = xgb.DMatrix(X, y)
 
-        booster = xgb.train({'tree_method': 'gpu_hist'}, dtrain, num_boost_round=10)
+        booster = xgb.train(
+            {'tree_method': 'gpu_hist', "gpu_id": device}, dtrain, num_boost_round=10
+        )
 
         test = xgb.DMatrix(X[:10, ...], missing=missing)
         predt_from_array = booster.inplace_predict(X[:10, ...], missing=missing)
         predt_from_dmatrix = booster.predict(test)
-
         cp.testing.assert_allclose(predt_from_array, predt_from_dmatrix)
 
         def predict_dense(x):
+            cp.cuda.runtime.setDevice(device)
             inplace_predt = booster.inplace_predict(x)
             d = xgb.DMatrix(x)
             copied_predt = cp.array(booster.predict(d))
@@ -183,7 +187,8 @@ class TestGPUPredict:
         # Don't do this on Windows, see issue #5793
         if sys.platform.startswith("win"):
             pytest.skip(
-                'Multi-threaded in-place prediction with cuPy is not working on Windows')
+                'Multi-threaded in-place prediction with cuPy is not working on Windows'
+            )
         for i in range(10):
             run_threaded_predict(X, rows, predict_dense)
 
@@ -196,13 +201,28 @@ class TestGPUPredict:
 
         missing_idx = [i for i in range(0, X.shape[1], 16)]
         X[:, missing_idx] = missing
-        reg = xgb.XGBRegressor(tree_method="gpu_hist", n_estimators=8, missing=missing)
+        reg = xgb.XGBRegressor(
+            tree_method="gpu_hist", n_estimators=8, missing=missing, gpu_id=device
+        )
         reg.fit(X, y)
 
         gpu_predt = reg.predict(X)
         reg.set_params(predictor="cpu_predictor")
         cpu_predt = reg.predict(X)
         np.testing.assert_allclose(gpu_predt, cpu_predt, atol=1e-6)
+        cp.cuda.runtime.setDevice(0)
+
+    @pytest.mark.skipif(**tm.no_cupy())
+    def test_inplace_predict_cupy(self):
+        self.run_inplace_predict_cupy(0)
+
+    @pytest.mark.skipif(**tm.no_cupy())
+    @pytest.mark.mgpu
+    def test_inplace_predict_cupy_specified_device(self):
+        import cupy as cp
+        n_devices = cp.cuda.runtime.getDeviceCount()
+        for d in range(n_devices):
+            self.run_inplace_predict_cupy(d)
 
     @pytest.mark.skipif(**tm.no_cupy())
     @pytest.mark.skipif(**tm.no_cudf())
@@ -247,8 +267,10 @@ class TestGPUPredict:
 
     @given(strategies.integers(1, 10),
            tm.dataset_strategy, shap_parameter_strategy)
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_shap(self, num_rounds, dataset, param):
+        if dataset.name.endswith("-l1"):  # not supported by the exact tree method
+            return
         param.update({"predictor": "gpu_predictor", "gpu_id": 0})
         param = dataset.set_params(param)
         dmat = dataset.get_dmat()
@@ -261,8 +283,10 @@ class TestGPUPredict:
 
     @given(strategies.integers(1, 10),
            tm.dataset_strategy, shap_parameter_strategy)
-    @settings(deadline=None, max_examples=20, print_blob=True)
+    @settings(deadline=None, max_examples=10, print_blob=True)
     def test_shap_interactions(self, num_rounds, dataset, param):
+        if dataset.name.endswith("-l1"):  # not supported by the exact tree method
+            return
         param.update({"predictor": "gpu_predictor", "gpu_id": 0})
         param = dataset.set_params(param)
         dmat = dataset.get_dmat()
@@ -312,14 +336,14 @@ class TestGPUPredict:
         np.testing.assert_equal(cpu_leaf, gpu_leaf)
 
     @given(predict_parameter_strategy, tm.dataset_strategy)
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_predict_leaf_gbtree(self, param, dataset):
         param['booster'] = 'gbtree'
         param['tree_method'] = 'gpu_hist'
         self.run_predict_leaf_booster(param, 10, dataset)
 
     @given(predict_parameter_strategy, tm.dataset_strategy)
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_predict_leaf_dart(self, param, dataset):
         param['booster'] = 'dart'
         param['tree_method'] = 'gpu_hist'
@@ -330,7 +354,7 @@ class TestGPUPredict:
     @given(df=data_frames([column('x0', elements=strategies.integers(min_value=0, max_value=3)),
                            column('x1', elements=strategies.integers(min_value=0, max_value=5))],
                           index=range_indexes(min_size=20, max_size=50)))
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_predict_categorical_split(self, df):
         from sklearn.metrics import mean_squared_error
 

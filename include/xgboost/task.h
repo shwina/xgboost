@@ -33,9 +33,15 @@ struct ObjInfo {
   } task;
   // Does the objective have constant hessian value?
   bool const_hess{false};
+  bool zero_hess{false};
 
-  explicit ObjInfo(Task t) : task{t} {}
-  ObjInfo(Task t, bool khess) : task{t}, const_hess{khess} {}
+  ObjInfo(Task t) : task{t} {}  // NOLINT
+  ObjInfo(Task t, bool khess, bool zhess) : task{t}, const_hess{khess}, zero_hess(zhess) {}
+
+  /**
+   * \brief Use adaptive tree if the objective doesn't have valid hessian value.
+   */
+  XGBOOST_DEVICE bool UpdateTreeLeaf() const { return zero_hess; }
 };
 }  // namespace xgboost
 #endif  // XGBOOST_TASK_H_

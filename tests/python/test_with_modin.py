@@ -14,14 +14,9 @@ except ImportError:
 pytestmark = pytest.mark.skipif(**tm.no_modin())
 
 
-dpath = 'demo/data/'
-rng = np.random.RandomState(1994)
-
-
 class TestModin:
-
+    @pytest.mark.xfail
     def test_modin(self):
-
         df = md.DataFrame([[1, 2., True], [2, 3., False]],
                           columns=['a', 'b', 'c'])
         dm = xgb.DMatrix(df, label=md.Series([1, 2]))

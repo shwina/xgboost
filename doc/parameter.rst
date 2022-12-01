@@ -151,15 +151,6 @@ Parameters for Tree Booster
     - ``hist``: Faster histogram optimized approximate greedy algorithm.
     - ``gpu_hist``: GPU implementation of ``hist`` algorithm.
 
-* ``sketch_eps`` [default=0.03]
-
-  - Only used for ``updater=grow_local_histmaker``.
-  - This roughly translates into ``O(1 / sketch_eps)`` number of bins.
-    Compared to directly select number of bins, this comes with theoretical guarantee with sketch accuracy.
-  - Usually user does not have to tune this.
-    But consider setting to a lower number for more accurate enumeration of split candidates.
-  - range: (0, 1)
-
 * ``scale_pos_weight`` [default=1]
 
   - Control the balance of positive and negative weights, useful for unbalanced classes. A typical value to consider: ``sum(negative instances) / sum(positive instances)``. See :doc:`Parameters Tuning </tutorials/param_tuning>` for more discussion. Also, see Higgs Kaggle competition demo for examples: `R <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-train.R>`_, `py1 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-numpy.py>`_, `py2 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-cv.py>`_, `py3 <https://github.com/dmlc/xgboost/blob/master/demo/guide-python/cross_validation.py>`_.
@@ -170,7 +161,6 @@ Parameters for Tree Booster
 
     - ``grow_colmaker``: non-distributed column-based construction of trees.
     - ``grow_histmaker``: distributed tree construction with row-based data splitting based on global proposal of histogram counting.
-    - ``grow_local_histmaker``: based on local histogram counting.
     - ``grow_quantile_histmaker``: Grow tree using quantized histogram.
     - ``grow_gpu_hist``: Grow tree with GPU.
     - ``sync``: synchronizes trees in all distributed nodes.
@@ -235,24 +225,34 @@ Parameters for Tree Booster
     list is a group of indices of features that are allowed to interact with each other.
     See :doc:`/tutorials/feature_interaction_constraint` for more information.
 
-Additional parameters for ``hist``, ``gpu_hist`` and ``approx`` tree method
-===========================================================================
+.. _cat-param:
 
-* ``single_precision_histogram``, [default= ``false``]
+Parameters for Categorical Feature
+==================================
 
-  - Use single precision to build histograms instead of double precision.
+These parameters are only used for training with categorical data. See
+:doc:`/tutorials/categorical` for more information.
 
 * ``max_cat_to_onehot``
 
-  .. versionadded:: 1.6
+  .. versionadded:: 1.6.0
 
-  .. note:: The support for this parameter is experimental.
+  .. note:: This parameter is experimental. ``exact`` tree method is not yet supported.
 
   - A threshold for deciding whether XGBoost should use one-hot encoding based split for
     categorical data.  When number of categories is lesser than the threshold then one-hot
     encoding is chosen, otherwise the categories will be partitioned into children nodes.
     Only relevant for regression and binary classification. Also, ``exact`` tree method is
     not supported
+
+* ``max_cat_threshold``
+
+  .. versionadded:: 1.7.0
+
+  .. note:: This parameter is experimental. ``exact`` tree method is not yet supported.
+
+  - Maximum number of categories considered for each split. Used only by partition-based
+    splits for preventing over-fitting.
 
 Additional parameters for Dart Booster (``booster=dart``)
 =========================================================
@@ -349,6 +349,7 @@ Specify the learning task and the corresponding learning objective. The objectiv
   - ``reg:squaredlogerror``: regression with squared log loss :math:`\frac{1}{2}[log(pred + 1) - log(label + 1)]^2`.  All input labels are required to be greater than -1.  Also, see metric ``rmsle`` for possible issue  with this objective.
   - ``reg:logistic``: logistic regression.
   - ``reg:pseudohubererror``: regression with Pseudo Huber loss, a twice differentiable alternative to absolute loss.
+  - ``reg:absoluteerror``: Regression with L1 error. When tree model is used, leaf value is refreshed after tree construction. If used in distributed training, the leaf value is calculated as the mean value from all workers, which is not guaranteed to be optimal.
   - ``binary:logistic``: logistic regression for binary classification, output probability
   - ``binary:logitraw``: logistic regression for binary classification, output score before logistic transformation
   - ``binary:hinge``: hinge loss for binary classification. This makes predictions of 0 or 1, rather than producing probabilities.
@@ -369,9 +370,11 @@ Specify the learning task and the corresponding learning objective. The objectiv
   - ``reg:gamma``: gamma regression with log-link. Output is a mean of gamma distribution. It might be useful, e.g., for modeling insurance claims severity, or for any outcome that might be `gamma-distributed <https://en.wikipedia.org/wiki/Gamma_distribution#Occurrence_and_applications>`_.
   - ``reg:tweedie``: Tweedie regression with log-link. It might be useful, e.g., for modeling total loss in insurance, or for any outcome that might be `Tweedie-distributed <https://en.wikipedia.org/wiki/Tweedie_distribution#Occurrence_and_applications>`_.
 
-* ``base_score`` [default=0.5]
+* ``base_score``
 
   - The initial prediction score of all instances, global bias
+  - The parameter is automatically estimated for selected objectives before training. To
+    disable the estimation, specify a real number argument.
   - For sufficient number of iterations, changing this value will not have too much effect.
 
 * ``eval_metric`` [default according to objective]

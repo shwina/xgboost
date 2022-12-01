@@ -207,7 +207,7 @@
         }
       }
     },
-    "pseduo_huber_param": {
+    "pseudo_huber_param": {
       "type": "object",
       "properties": {
         "huber_slope": {
@@ -247,7 +247,7 @@
       "items": [
         {
           "type": "number",
-          "const": 1
+          "minimum": 1
         },
         {
           "type": "number",
@@ -400,7 +400,6 @@
                 "reg_loss_param"
               ]
             },
-
             {
               "type": "object",
               "properties": {
@@ -432,6 +431,14 @@
                 "name",
                 "tweedie_regression_param"
               ]
+            },
+            {
+              "properties": {
+                "name": {
+                  "const": "reg:absoluteerror"
+                }
+              },
+              "type": "object"
             },
             {
               "type": "object",

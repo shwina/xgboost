@@ -2,16 +2,17 @@
  * Copyright (c) by Contributors 2019-2022
  */
 #include <gtest/gtest.h>
-#include <dmlc/filesystem.h>
+
 #include <fstream>
 #include <map>
 
-#include "xgboost/json.h"
-#include "xgboost/logging.h"
-#include "xgboost/json_io.h"
-#include "../helpers.h"
-#include "../../../src/common/io.h"
 #include "../../../src/common/charconv.h"
+#include "../../../src/common/io.h"
+#include "../filesystem.h"  // dmlc::TemporaryDirectory
+#include "../helpers.h"
+#include "xgboost/json.h"
+#include "xgboost/json_io.h"
+#include "xgboost/logging.h"
 
 namespace xgboost {
 
@@ -498,8 +499,7 @@ TEST(Json, WrongCasts) {
     ASSERT_ANY_THROW(get<Number>(json));
   }
   {
-    Json json = Json{ Object{std::map<std::string, Json>{
-          {"key", Json{String{"value"}}}} } };
+    Json json = Json{Object{{{"key", Json{String{"value"}}}}}};
     ASSERT_ANY_THROW(get<Number>(json));
   }
 }

@@ -23,7 +23,6 @@ void InitRowPartitionForTest(common::RowSetCollection *row_set, size_t n_samples
 }
 }  // anonymous namespace
 
-template <typename GradientSumT>
 void TestAddHistRows(bool is_distributed) {
   std::vector<CPUExpandEntry> nodes_for_explicit_hist_build_;
   std::vector<CPUExpandEntry> nodes_for_subtraction_trick_;
@@ -46,7 +45,7 @@ void TestAddHistRows(bool is_distributed) {
   nodes_for_subtraction_trick_.emplace_back(5, tree.GetDepth(5), 0.0f);
   nodes_for_subtraction_trick_.emplace_back(6, tree.GetDepth(6), 0.0f);
 
-  HistogramBuilder<GradientSumT, CPUExpandEntry> histogram_builder;
+  HistogramBuilder<CPUExpandEntry> histogram_builder;
   histogram_builder.Reset(gmat.cut.TotalBins(), {kMaxBins, 0.5}, omp_get_max_threads(), 1,
                           is_distributed);
   histogram_builder.AddHistRows(&starting_index, &sync_count,
@@ -66,14 +65,10 @@ void TestAddHistRows(bool is_distributed) {
 
 
 TEST(CPUHistogram, AddRows) {
-  TestAddHistRows<float>(true);
-  TestAddHistRows<double>(true);
-
-  TestAddHistRows<float>(false);
-  TestAddHistRows<double>(false);
+  TestAddHistRows(true);
+  TestAddHistRows(false);
 }
 
-template <typename GradientSumT>
 void TestSyncHist(bool is_distributed) {
   size_t constexpr kNRows = 8, kNCols = 16;
   int32_t constexpr kMaxBins = 4;
@@ -88,7 +83,7 @@ void TestSyncHist(bool is_distributed) {
       RandomDataGenerator(kNRows, kNCols, 0.8).Seed(3).GenerateDMatrix();
   auto const &gmat = *(p_fmat->GetBatches<GHistIndexMatrix>(BatchParam{kMaxBins, 0.5}).begin());
 
-  HistogramBuilder<GradientSumT, CPUExpandEntry> histogram;
+  HistogramBuilder<CPUExpandEntry> histogram;
   uint32_t total_bins = gmat.cut.Ptrs().back();
   histogram.Reset(total_bins, {kMaxBins, 0.5}, omp_get_max_threads(), 1, is_distributed);
 
@@ -153,7 +148,7 @@ void TestSyncHist(bool is_distributed) {
       },
       256);
 
-  std::vector<common::GHistRow<GradientSumT>> target_hists(n_nodes);
+  std::vector<common::GHistRow> target_hists(n_nodes);
   for (size_t i = 0; i < nodes_for_explicit_hist_build_.size(); ++i) {
     const int32_t nid = nodes_for_explicit_hist_build_[i].nid;
     target_hists[i] = histogram.Histogram()[nid];
@@ -163,7 +158,7 @@ void TestSyncHist(bool is_distributed) {
   std::vector<size_t> n_ids = {1, 2};
   for (size_t i : n_ids) {
     auto this_hist = histogram.Histogram()[i];
-    GradientSumT *p_hist = reinterpret_cast<GradientSumT *>(this_hist.data());
+    double *p_hist = reinterpret_cast<double *>(this_hist.data());
     for (size_t bin_id = 0; bin_id < 2 * total_bins; ++bin_id) {
       p_hist[bin_id] = 2 * bin_id;
     }
@@ -172,7 +167,7 @@ void TestSyncHist(bool is_distributed) {
   n_ids[1] = 5;
   for (size_t i : n_ids) {
     auto this_hist = histogram.Histogram()[i];
-    GradientSumT *p_hist = reinterpret_cast<GradientSumT *>(this_hist.data());
+    double *p_hist = reinterpret_cast<double *>(this_hist.data());
     for (size_t bin_id = 0; bin_id < 2 * total_bins; ++bin_id) {
       p_hist[bin_id] = bin_id;
     }
@@ -186,19 +181,15 @@ void TestSyncHist(bool is_distributed) {
                                        starting_index, sync_count);
   } else {
     histogram.SyncHistogramLocal(&tree, nodes_for_explicit_hist_build_,
-                                 nodes_for_subtraction_trick_, starting_index,
-                                 sync_count);
+                                 nodes_for_subtraction_trick_);
   }
 
-  using GHistRowT = common::GHistRow<GradientSumT>;
-  auto check_hist = [](const GHistRowT parent, const GHistRowT left,
-                       const GHistRowT right, size_t begin, size_t end) {
-    const GradientSumT *p_parent =
-        reinterpret_cast<const GradientSumT *>(parent.data());
-    const GradientSumT *p_left =
-        reinterpret_cast<const GradientSumT *>(left.data());
-    const GradientSumT *p_right =
-        reinterpret_cast<const GradientSumT *>(right.data());
+  using GHistRowT = common::GHistRow;
+  auto check_hist = [](const GHistRowT parent, const GHistRowT left, const GHistRowT right,
+                       size_t begin, size_t end) {
+    const double *p_parent = reinterpret_cast<const double *>(parent.data());
+    const double *p_left = reinterpret_cast<const double *>(left.data());
+    const double *p_right = reinterpret_cast<const double *>(right.data());
     for (size_t i = 2 * begin; i < 2 * end; ++i) {
       ASSERT_EQ(p_parent[i], p_left[i] + p_right[i]);
     }
@@ -230,15 +221,11 @@ void TestSyncHist(bool is_distributed) {
 }
 
 TEST(CPUHistogram, SyncHist) {
-  TestSyncHist<float>(true);
-  TestSyncHist<double>(true);
-
-  TestSyncHist<float>(false);
-  TestSyncHist<double>(false);
+  TestSyncHist(true);
+  TestSyncHist(false);
 }
 
-template <typename GradientSumT>
-void TestBuildHistogram(bool is_distributed) {
+void TestBuildHistogram(bool is_distributed, bool force_read_by_column) {
   size_t constexpr kNRows = 8, kNCols = 16;
   int32_t constexpr kMaxBins = 4;
   auto p_fmat =
@@ -252,7 +239,7 @@ void TestBuildHistogram(bool is_distributed) {
       {0.27f, 0.29f}, {0.37f, 0.39f}, {0.47f, 0.49f}, {0.57f, 0.59f}};
 
   bst_node_t nid = 0;
-  HistogramBuilder<GradientSumT, CPUExpandEntry> histogram;
+  HistogramBuilder<CPUExpandEntry> histogram;
   histogram.Reset(total_bins, {kMaxBins, 0.5}, omp_get_max_threads(), 1, is_distributed);
 
   RegTree tree;
@@ -269,7 +256,7 @@ void TestBuildHistogram(bool is_distributed) {
   nodes_for_explicit_hist_build.push_back(node);
   for (auto const &gidx : p_fmat->GetBatches<GHistIndexMatrix>({kMaxBins, 0.5})) {
     histogram.BuildHist(0, gidx, &tree, row_set_collection,
-                        nodes_for_explicit_hist_build, {}, gpair);
+                        nodes_for_explicit_hist_build, {}, gpair, force_read_by_column);
   }
 
   // Check if number of histogram bins is correct
@@ -296,15 +283,35 @@ void TestBuildHistogram(bool is_distributed) {
 }
 
 TEST(CPUHistogram, BuildHist) {
-  TestBuildHistogram<float>(true);
-  TestBuildHistogram<double>(true);
+  TestBuildHistogram(true, false);
+  TestBuildHistogram(false, false);
+  TestBuildHistogram(true, true);
+  TestBuildHistogram(false, true);
 
-  TestBuildHistogram<float>(false);
-  TestBuildHistogram<double>(false);
 }
 
 namespace {
-void TestHistogramCategorical(size_t n_categories) {
+template <typename GradientSumT>
+void ValidateCategoricalHistogram(size_t n_categories,
+                                  common::Span<GradientSumT> onehot,
+                                  common::Span<GradientSumT> cat) {
+  auto cat_sum = std::accumulate(cat.cbegin(), cat.cend(), GradientPairPrecise{});
+  for (size_t c = 0; c < n_categories; ++c) {
+    auto zero = onehot[c * 2];
+    auto one = onehot[c * 2 + 1];
+
+    auto chosen = cat[c];
+    auto not_chosen = cat_sum - chosen;
+
+    ASSERT_LE(RelError(zero.GetGrad(), not_chosen.GetGrad()), kRtEps);
+    ASSERT_LE(RelError(zero.GetHess(), not_chosen.GetHess()), kRtEps);
+
+    ASSERT_LE(RelError(one.GetGrad(), chosen.GetGrad()), kRtEps);
+    ASSERT_LE(RelError(one.GetHess(), chosen.GetHess()), kRtEps);
+  }
+}
+
+void TestHistogramCategorical(size_t n_categories, bool force_read_by_column) {
   size_t constexpr kRows = 340;
   int32_t constexpr kBins = 256;
   auto x = GenerateRandomCategoricalSingleColumn(kRows, n_categories);
@@ -329,12 +336,13 @@ void TestHistogramCategorical(size_t n_categories) {
   /**
    * Generate hist with cat data.
    */
-  HistogramBuilder<double, CPUExpandEntry> cat_hist;
+  HistogramBuilder<CPUExpandEntry> cat_hist;
   for (auto const &gidx : cat_m->GetBatches<GHistIndexMatrix>({kBins, 0.5})) {
     auto total_bins = gidx.cut.TotalBins();
     cat_hist.Reset(total_bins, {kBins, 0.5}, omp_get_max_threads(), 1, false);
     cat_hist.BuildHist(0, gidx, &tree, row_set_collection,
-                        nodes_for_explicit_hist_build, {}, gpair.HostVector());
+                        nodes_for_explicit_hist_build, {}, gpair.HostVector(),
+                        force_read_by_column);
   }
 
   /**
@@ -342,12 +350,13 @@ void TestHistogramCategorical(size_t n_categories) {
    */
   auto x_encoded = OneHotEncodeFeature(x, n_categories);
   auto encode_m = GetDMatrixFromData(x_encoded, kRows, n_categories);
-  HistogramBuilder<double, CPUExpandEntry> onehot_hist;
+  HistogramBuilder<CPUExpandEntry> onehot_hist;
   for (auto const &gidx : encode_m->GetBatches<GHistIndexMatrix>({kBins, 0.5})) {
     auto total_bins = gidx.cut.TotalBins();
     onehot_hist.Reset(total_bins, {kBins, 0.5}, omp_get_max_threads(), 1, false);
     onehot_hist.BuildHist(0, gidx, &tree, row_set_collection, nodes_for_explicit_hist_build, {},
-                          gpair.HostVector());
+                          gpair.HostVector(),
+                          force_read_by_column);
   }
 
   auto cat = cat_hist.Histogram()[0];
@@ -358,11 +367,14 @@ void TestHistogramCategorical(size_t n_categories) {
 
 TEST(CPUHistogram, Categorical) {
   for (size_t n_categories = 2; n_categories < 8; ++n_categories) {
-    TestHistogramCategorical(n_categories);
+    TestHistogramCategorical(n_categories, false);
+  }
+  for (size_t n_categories = 2; n_categories < 8; ++n_categories) {
+    TestHistogramCategorical(n_categories, true);
   }
 }
 namespace {
-void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx) {
+void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx, bool force_read_by_column) {
   size_t constexpr kEntries = 1 << 16;
   auto m = CreateSparsePageDMatrix(kEntries, "cache");
 
@@ -382,8 +394,8 @@ void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx) {
   std::vector<CPUExpandEntry> nodes;
   nodes.emplace_back(0, tree.GetDepth(0), 0.0f);
 
-  common::GHistRow<double> multi_page;
-  HistogramBuilder<double, CPUExpandEntry> multi_build;
+  common::GHistRow multi_page;
+  HistogramBuilder<CPUExpandEntry> multi_build;
   {
     /**
      * Multi page
@@ -410,15 +422,15 @@ void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx) {
     size_t page_idx{0};
     for (auto const &page : m->GetBatches<GHistIndexMatrix>(batch_param)) {
       multi_build.BuildHist(page_idx, space, page, &tree, rows_set.at(page_idx), nodes, {},
-                            h_gpair);
+                            h_gpair, force_read_by_column);
       ++page_idx;
     }
     ASSERT_EQ(page_idx, 2);
     multi_page = multi_build.Histogram()[0];
   }
 
-  HistogramBuilder<double, CPUExpandEntry> single_build;
-  common::GHistRow<double> single_page;
+  HistogramBuilder<CPUExpandEntry> single_build;
+  common::GHistRow single_page;
   {
     /**
      * Single page
@@ -428,11 +440,16 @@ void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx) {
 
     single_build.Reset(total_bins, batch_param, common::OmpGetNumThreads(0), 1, false);
     SparsePage concat;
-    GHistIndexMatrix gmat;
     std::vector<float> hess(m->Info().num_row_, 1.0f);
-    gmat.Init(m.get(), batch_param.max_bin, std::numeric_limits<double>::quiet_NaN(), false,
-              common::OmpGetNumThreads(0), hess);
-    single_build.BuildHist(0, gmat, &tree, row_set_collection, nodes, {}, h_gpair);
+    for (auto const& page : m->GetBatches<SparsePage>()) {
+      concat.Push(page);
+    }
+
+    auto cut = common::SketchOnDMatrix(m.get(), batch_param.max_bin, common::OmpGetNumThreads(0),
+                                       false, hess);
+    GHistIndexMatrix gmat(concat, {}, cut, batch_param.max_bin, false,
+                          std::numeric_limits<double>::quiet_NaN(), common::OmpGetNumThreads(0));
+    single_build.BuildHist(0, gmat, &tree, row_set_collection, nodes, {}, h_gpair, force_read_by_column);
     single_page = single_build.Histogram()[0];
   }
 
@@ -445,12 +462,15 @@ void TestHistogramExternalMemory(BatchParam batch_param, bool is_approx) {
 
 TEST(CPUHistogram, ExternalMemory) {
   int32_t constexpr kBins = 256;
-  TestHistogramExternalMemory(BatchParam{kBins, common::Span<float>{}, false}, true);
+  TestHistogramExternalMemory(BatchParam{kBins, common::Span<float>{}, false}, true, false);
+  TestHistogramExternalMemory(BatchParam{kBins, common::Span<float>{}, false}, true, true);
 
   float sparse_thresh{0.5};
-  TestHistogramExternalMemory({kBins, sparse_thresh}, false);
+  TestHistogramExternalMemory({kBins, sparse_thresh}, false, false);
+  TestHistogramExternalMemory({kBins, sparse_thresh}, false, true);
   sparse_thresh = std::numeric_limits<float>::quiet_NaN();
-  TestHistogramExternalMemory({kBins, sparse_thresh}, false);
+  TestHistogramExternalMemory({kBins, sparse_thresh}, false, false);
+  TestHistogramExternalMemory({kBins, sparse_thresh}, false, true);
 
 }
 }  // namespace tree

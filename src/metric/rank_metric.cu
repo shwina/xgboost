@@ -4,7 +4,6 @@
  * \brief prediction rank based metrics.
  * \author Kailong Chen, Tianqi Chen
  */
-#include <rabit/rabit.h>
 #include <dmlc/registry.h>
 
 #include <xgboost/metric.h>
@@ -16,8 +15,6 @@
 #include <thrust/scan.h>
 #include <thrust/transform.h>
 
-#include <cmath>
-#include <array>
 #include <vector>
 
 #include "metric_common.h"
@@ -34,8 +31,7 @@ DMLC_REGISTRY_FILE_TAG(rank_metric_gpu);
 template <typename EvalMetricT>
 struct EvalRankGpu : public GPUMetric, public EvalRankConfig {
  public:
-  double Eval(const HostDeviceVector<bst_float> &preds, const MetaInfo &info,
-              bool distributed) override {
+  double Eval(const HostDeviceVector<bst_float> &preds, const MetaInfo &info) override {
     // Sanity check is done by the caller
     std::vector<unsigned> tgptr(2, 0);
     tgptr[1] = static_cast<unsigned>(preds.Size());

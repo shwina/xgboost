@@ -1,6 +1,11 @@
 import testing as tm
-from hypothesis import strategies, given, settings, note
+from hypothesis import given, note, settings, strategies
+
 import xgboost as xgb
+from xgboost import testing
+
+pytestmark = testing.timeout(10)
+
 
 parameter_strategy = strategies.fixed_dictionaries({
     'booster': strategies.just('gblinear'),
@@ -26,7 +31,7 @@ def train_result(param, dmat, num_rounds):
 class TestLinear:
     @given(parameter_strategy, strategies.integers(10, 50),
            tm.dataset_strategy, coord_strategy)
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_coordinate(self, param, num_rounds, dataset, coord_param):
         param['updater'] = 'coord_descent'
         param.update(coord_param)
@@ -38,10 +43,15 @@ class TestLinear:
     # Loss is not guaranteed to always decrease because of regularisation parameters
     # We test a weaker condition that the loss has not increased between the first and last
     # iteration
-    @given(parameter_strategy, strategies.integers(10, 50),
-           tm.dataset_strategy, coord_strategy, strategies.floats(1e-5, 1.0),
-           strategies.floats(1e-5, 1.0))
-    @settings(deadline=None, print_blob=True)
+    @given(
+        parameter_strategy,
+        strategies.integers(10, 50),
+        tm.dataset_strategy,
+        coord_strategy,
+        strategies.floats(1e-5, 0.8),
+        strategies.floats(1e-5, 0.8)
+    )
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_coordinate_regularised(self, param, num_rounds, dataset, coord_param, alpha, lambd):
         param['updater'] = 'coord_descent'
         param['alpha'] = alpha
@@ -54,7 +64,7 @@ class TestLinear:
 
     @given(parameter_strategy, strategies.integers(10, 50),
            tm.dataset_strategy)
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_shotgun(self, param, num_rounds, dataset):
         param['updater'] = 'shotgun'
         param = dataset.set_params(param)
@@ -71,7 +81,7 @@ class TestLinear:
     @given(parameter_strategy, strategies.integers(10, 50),
            tm.dataset_strategy, strategies.floats(1e-5, 1.0),
            strategies.floats(1e-5, 1.0))
-    @settings(deadline=None, print_blob=True)
+    @settings(deadline=None, max_examples=20, print_blob=True)
     def test_shotgun_regularised(self, param, num_rounds, dataset, alpha, lambd):
         param['updater'] = 'shotgun'
         param['alpha'] = alpha

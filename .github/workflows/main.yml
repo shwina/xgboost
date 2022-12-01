@@ -6,6 +6,9 @@ name: XGBoost-CI
 # events but only for the master branch
 on: [push, pull_request]
 
+permissions:
+  contents: read # to fetch code (actions/checkout)
+
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   gtest-cpu:
@@ -14,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-10.15]
+        os: [macos-11]
     steps:
     - uses: actions/checkout@v2
       with:
@@ -129,40 +132,21 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    name: Code linting for Python and C++
+    name: Code linting for C++
     steps:
     - uses: actions/checkout@v2
       with:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: '3.7'
+        python-version: "3.8"
         architecture: 'x64'
     - name: Install Python packages
       run: |
-        python -m pip install wheel setuptools
-        python -m pip install pylint cpplint numpy scipy scikit-learn
+        python -m pip install wheel setuptools cpplint pylint
     - name: Run lint
       run: |
-        make lint
-
-  mypy:
-    runs-on: ubuntu-latest
-    name: Type checking for Python
-    steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: 'true'
-    - uses: actions/setup-python@v2
-      with:
-        python-version: '3.7'
-        architecture: 'x64'
-    - name: Install Python packages
-      run: |
-        python -m pip install wheel setuptools mypy pandas dask[complete] distributed
-    - name: Run mypy
-      run: |
-        make mypy
+        LINT_LANG=cpp make lint
 
   doxygen:
     runs-on: ubuntu-latest
@@ -173,7 +157,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: '3.7'
+        python-version: "3.8"
         architecture: 'x64'
     - name: Install system packages
       run: |
@@ -210,7 +194,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: '3.8'
+        python-version: "3.8"
         architecture: 'x64'
     - name: Install system packages
       run: |

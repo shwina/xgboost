@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import logging
-import distutils
 from typing import Optional, List
 import sys
 from platform import system
@@ -45,17 +44,19 @@ def lib_name() -> str:
         name = 'libxgboost.dylib'
     elif system() == 'Windows':
         name = 'xgboost.dll'
+    elif system() == 'OS400':
+        name = 'libxgboost.so'
     return name
 
 
 def copy_tree(src_dir: str, target_dir: str) -> None:
     '''Copy source tree into build directory.'''
     def clean_copy_tree(src: str, dst: str) -> None:
-        distutils.dir_util.copy_tree(src, dst)
+        shutil.copytree(src, dst)
         NEED_CLEAN_TREE.add(os.path.abspath(dst))
 
     def clean_copy_file(src: str, dst: str) -> None:
-        distutils.file_util.copy_file(src, dst)
+        shutil.copy(src, dst)
         NEED_CLEAN_FILE.add(os.path.abspath(dst))
 
     src = os.path.join(src_dir, 'src')
@@ -169,6 +170,8 @@ class BuildExt(build_ext.build_ext):  # pylint: disable=too-many-ancestors
         if shutil.which('ninja'):
             build_tool = 'ninja'
         else:
+            build_tool = 'make'
+        if sys.platform.startswith('os400'):
             build_tool = 'make'
 
         if system() == 'Windows':
@@ -319,7 +322,7 @@ if __name__ == '__main__':
     # - python setup.py bdist_wheel && pip install <wheel-name>
 
     # When XGBoost is compiled directly with CMake:
-    # - pip install . -e
+    # - pip install -e .
     # - python setup.py develop   # same as above
     logging.basicConfig(level=logging.INFO)
 
@@ -338,18 +341,20 @@ if __name__ == '__main__':
               'scipy',
           ],
           ext_modules=[CMakeExtension('libxgboost')],
+          # error: expected "str": "Type[Command]"
           cmdclass={
-              'build_ext': BuildExt,
-              'sdist': Sdist,
-              'install_lib': InstallLib,
-              'install': Install
+              'build_ext': BuildExt,     # type: ignore
+              'sdist': Sdist,            # type: ignore
+              'install_lib': InstallLib,  # type: ignore
+              'install': Install          # type: ignore
           },
           extras_require={
               'pandas': ['pandas'],
               'scikit-learn': ['scikit-learn'],
               'dask': ['dask', 'pandas', 'distributed'],
               'datatable': ['datatable'],
-              'plotting': ['graphviz', 'matplotlib']
+              'plotting': ['graphviz', 'matplotlib'],
+              "pyspark": ["pyspark", "scikit-learn", "cloudpickle"],
           },
           maintainer='Hyunsu Cho',
           maintainer_email='chohyu01@cs.washington.edu',
@@ -362,11 +367,10 @@ if __name__ == '__main__':
                        'Operating System :: OS Independent',
                        'Programming Language :: Python',
                        'Programming Language :: Python :: 3',
-                       'Programming Language :: Python :: 3.7',
                        'Programming Language :: Python :: 3.8',
                        'Programming Language :: Python :: 3.9',
                        'Programming Language :: Python :: 3.10'],
-          python_requires=">=3.7",
+          python_requires=">=3.8",
           url='https://github.com/dmlc/xgboost')
 
     clean_up()

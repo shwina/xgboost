@@ -91,21 +91,21 @@ function(format_gencode_flags flags out)
   # Set up architecture flags
   if(NOT flags)
     if (CUDA_VERSION VERSION_GREATER_EQUAL "11.1")
-      set(flags "52;60;61;70;75;80;86")
+      set(flags "50;60;70;80")
     elseif (CUDA_VERSION VERSION_GREATER_EQUAL "11.0")
-      set(flags "52;60;61;70;75;80")
+      set(flags "50;60;70;80")
     elseif(CUDA_VERSION VERSION_GREATER_EQUAL "10.0")
-      set(flags "35;50;52;60;61;70;75")
+      set(flags "35;50;60;70")
     elseif(CUDA_VERSION VERSION_GREATER_EQUAL "9.0")
-      set(flags "35;50;52;60;61;70")
+      set(flags "35;50;60;70")
     else()
-      set(flags "35;50;52;60;61")
+      set(flags "35;50;60")
     endif()
   endif()
 
   if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
     cmake_policy(SET CMP0104 NEW)
-    list(POP_BACK flags latest_arch)
+    list(GET flags -1 latest_arch)
     list(TRANSFORM flags APPEND "-real")
     list(APPEND flags ${latest_arch})
     set(CMAKE_CUDA_ARCHITECTURES ${flags})
@@ -143,6 +143,15 @@ function(xgboost_set_cuda_flags target)
   if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
     set_property(TARGET ${target} PROPERTY CUDA_ARCHITECTURES ${CMAKE_CUDA_ARCHITECTURES})
   endif (CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
+
+  if (FORCE_COLORED_OUTPUT)
+    if (FORCE_COLORED_OUTPUT AND (CMAKE_GENERATOR STREQUAL "Ninja") AND
+        ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR
+          (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")))
+      target_compile_options(${target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fdiagnostics-color=always>)
+    endif()
+  endif (FORCE_COLORED_OUTPUT)
 
   if (USE_DEVICE_DEBUG)
     target_compile_options(${target} PRIVATE
@@ -219,7 +228,9 @@ macro(xgboost_target_properties target)
 
   if (ENABLE_ALL_WARNINGS)
     target_compile_options(${target} PUBLIC
-      $<IF:$<COMPILE_LANGUAGE:CUDA>,-Xcompiler=-Wall -Xcompiler=-Wextra,-Wall -Wextra>
+      $<IF:$<COMPILE_LANGUAGE:CUDA>,
+      -Xcompiler=-Wall -Xcompiler=-Wextra -Xcompiler=-Wno-expansion-to-defined,
+      -Wall -Wextra -Wno-expansion-to-defined>
     )
   endif(ENABLE_ALL_WARNINGS)
 
@@ -233,7 +244,7 @@ macro(xgboost_target_properties target)
       $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:/utf-8>
       -D_CRT_SECURE_NO_WARNINGS
       -D_CRT_SECURE_NO_DEPRECATE
-      )
+    )
   endif (MSVC)
 
   if (WIN32 AND MINGW)
@@ -303,4 +314,8 @@ macro(xgboost_target_link_libraries target)
   if (RABIT_BUILD_MPI)
     target_link_libraries(${target} PRIVATE MPI::MPI_CXX)
   endif (RABIT_BUILD_MPI)
+
+  if (MINGW)
+    target_link_libraries(${target} PRIVATE wsock32 ws2_32)
+  endif (MINGW)
 endmacro(xgboost_target_link_libraries)

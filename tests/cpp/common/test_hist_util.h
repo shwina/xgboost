@@ -3,16 +3,17 @@
  */
 #pragma once
 #include <gtest/gtest.h>
-#include <dmlc/filesystem.h>
-#include <random>
-#include <vector>
-#include <string>
-#include <fstream>
 
-#include "../helpers.h"
+#include <fstream>
+#include <random>
+#include <string>
+#include <vector>
+
 #include "../../../src/common/hist_util.h"
-#include "../../../src/data/simple_dmatrix.h"
 #include "../../../src/data/adapter.h"
+#include "../../../src/data/simple_dmatrix.h"
+#include "../filesystem.h"  // dmlc::TemporaryDirectory
+#include "../helpers.h"
 
 #ifdef __CUDACC__
 #include <xgboost/json.h>
@@ -77,7 +78,7 @@ GetDMatrixFromData(const std::vector<float> &x, int num_rows, int num_columns) {
 
 inline std::shared_ptr<DMatrix> GetExternalMemoryDMatrixFromData(
     const std::vector<float>& x, int num_rows, int num_columns,
-    size_t page_size, const dmlc::TemporaryDirectory& tempdir) {
+    const dmlc::TemporaryDirectory& tempdir) {
   // Create the svm file in a temp dir
   const std::string tmp_file = tempdir.path + "/temp.libsvm";
   std::ofstream fo(tmp_file.c_str());
@@ -95,10 +96,9 @@ inline std::shared_ptr<DMatrix> GetExternalMemoryDMatrixFromData(
 }
 
 // Test that elements are approximately equally distributed among bins
-inline void TestBinDistribution(const HistogramCuts &cuts, int column_idx,
-                                const std::vector<float> &sorted_column,
-                                const std::vector<float> &sorted_weights,
-                                int num_bins) {
+inline void TestBinDistribution(const HistogramCuts& cuts, int column_idx,
+                                const std::vector<float>& sorted_column,
+                                const std::vector<float>& sorted_weights) {
   std::map<int, int> bin_weights;
   for (auto i = 0ull; i < sorted_column.size(); i++) {
     auto bin_idx = cuts.SearchBin(sorted_column[i], column_idx);
@@ -178,7 +178,7 @@ inline void ValidateColumn(const HistogramCuts& cuts, int column_idx,
     std::copy(cuts.Values().begin() + cuts.Ptrs()[column_idx],
       cuts.Values().begin() + cuts.Ptrs()[column_idx + 1],
       column_cuts.begin());
-    TestBinDistribution(cuts, column_idx, sorted_column, sorted_weights, num_bins);
+    TestBinDistribution(cuts, column_idx, sorted_column, sorted_weights);
     TestRank(column_cuts, sorted_column, sorted_weights);
   }
 }
