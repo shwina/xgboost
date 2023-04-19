@@ -1,7 +1,7 @@
 # type: ignore
 """Xgboost pyspark integration submodule for core code."""
 # pylint: disable=fixme, too-many-ancestors, protected-access, no-member, invalid-name
-# pylint: disable=too-few-public-methods, too-many-lines
+# pylint: disable=too-few-public-methods, too-many-lines, too-many-branches
 import json
 from typing import Iterator, Optional, Tuple
 
@@ -32,6 +32,7 @@ from pyspark.sql.types import (
     ShortType,
 )
 from scipy.special import expit, softmax  # pylint: disable=no-name-in-module
+from xgboost.compat import is_cudf_available
 from xgboost.core import Booster
 from xgboost.training import train as worker_train
 
@@ -136,6 +137,13 @@ _unsupported_predict_params = {
     "output_margin",
     "validate_features",  # TODO
     "base_margin",  # Use pyspark base_margin_col param instead.
+}
+
+
+# TODO: supply hint message for all other unsupported params.
+_unsupported_params_hint_message = {
+    "enable_categorical": "`xgboost.spark` estimators do not have 'enable_categorical' param, "
+    "but you can set `feature_types` param and mark categorical features with 'c' string."
 }
 
 
@@ -522,7 +530,10 @@ class _SparkXGBEstimator(Estimator, _SparkXGBParams, MLReadable, MLWritable):
                     or k in _unsupported_predict_params
                     or k in _unsupported_train_params
                 ):
-                    raise ValueError(f"Unsupported param '{k}'.")
+                    err_msg = _unsupported_params_hint_message.get(
+                        k, f"Unsupported param '{k}'."
+                    )
+                    raise ValueError(err_msg)
                 _extra_params[k] = v
         _existing_extra_params = self.getOrDefault(self.arbitrary_params_dict)
         self._set(arbitrary_params_dict={**_existing_extra_params, **_extra_params})
@@ -728,6 +739,10 @@ class _SparkXGBEstimator(Estimator, _SparkXGBParams, MLReadable, MLWritable):
             else:
                 dataset = dataset.repartition(num_workers)
 
+        if self.isDefined(self.qid_col) and self.getOrDefault(self.qid_col):
+            # XGBoost requires qid to be sorted for each partition
+            dataset = dataset.sortWithinPartitions(alias.qid, ascending=True)
+
         train_params = self._get_distributed_train_params(dataset)
         booster_params, train_call_kwargs_params = self._get_xgb_train_call_args(
             train_params
@@ -744,6 +759,8 @@ class _SparkXGBEstimator(Estimator, _SparkXGBParams, MLReadable, MLWritable):
             "feature_weights": self.getOrDefault(self.feature_weights),
             "missing": float(self.getOrDefault(self.missing)),
         }
+        if dmatrix_kwargs["feature_types"] is not None:
+            dmatrix_kwargs["enable_categorical"] = True
         booster_params["nthread"] = cpu_per_task
         use_gpu = self.getOrDefault(self.use_gpu)
 
@@ -755,7 +772,8 @@ class _SparkXGBEstimator(Estimator, _SparkXGBParams, MLReadable, MLWritable):
             k: v for k, v in train_call_kwargs_params.items() if v is not None
         }
         dmatrix_kwargs = {k: v for k, v in dmatrix_kwargs.items() if v is not None}
-        use_qdm = booster_params.get("tree_method", None) in ("hist", "gpu_hist")
+
+        use_hist = booster_params.get("tree_method", None) in ("hist", "gpu_hist")
 
         def _train_booster(pandas_df_iter):
             """Takes in an RDD partition and outputs a booster for that partition after
@@ -768,6 +786,15 @@ class _SparkXGBEstimator(Estimator, _SparkXGBParams, MLReadable, MLWritable):
             context.barrier()
 
             gpu_id = None
+
+            # If cuDF is not installed, then using DMatrix instead of QDM,
+            # because without cuDF, DMatrix performs better than QDM.
+            # Note: Checking `is_cudf_available` in spark worker side because
+            # spark worker might has different python environment with driver side.
+            if use_gpu:
+                use_qdm = use_hist and is_cudf_available()
+            else:
+                use_qdm = use_hist
 
             if use_qdm and (booster_params.get("max_bin", None) is not None):
                 dmatrix_kwargs["max_bin"] = booster_params["max_bin"]

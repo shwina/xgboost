@@ -41,6 +41,16 @@ logging.getLogger("py4j").setLevel(logging.INFO)
 pytestmark = testing.timeout(60)
 
 
+def no_sparse_unwrap():
+    try:
+        from pyspark.sql.functions import unwrap_udt
+
+    except ImportError:
+        return {"reason": "PySpark<3.4", "condition": True}
+
+    return {"reason": "PySpark<3.4", "condition": False}
+
+
 class XgboostLocalTest(SparkTestCase):
     def setUp(self):
         logging.getLogger().setLevel("INFO")
@@ -389,28 +399,6 @@ class XgboostLocalTest(SparkTestCase):
                 "expected_prob_with_base_margin",
                 "expected_prediction_with_base_margin",
             ],
-        )
-        self.ranker_df_train = self.session.createDataFrame(
-            [
-                (Vectors.dense(1.0, 2.0, 3.0), 0, 0),
-                (Vectors.dense(4.0, 5.0, 6.0), 1, 0),
-                (Vectors.dense(9.0, 4.0, 8.0), 2, 0),
-                (Vectors.sparse(3, {1: 1.0, 2: 5.5}), 0, 1),
-                (Vectors.sparse(3, {1: 6.0, 2: 7.5}), 1, 1),
-                (Vectors.sparse(3, {1: 8.0, 2: 9.5}), 2, 1),
-            ],
-            ["features", "label", "qid"],
-        )
-        self.ranker_df_test = self.session.createDataFrame(
-            [
-                (Vectors.dense(1.5, 2.0, 3.0), 0, -1.87988),
-                (Vectors.dense(4.5, 5.0, 6.0), 0, 0.29556),
-                (Vectors.dense(9.0, 4.5, 8.0), 0, 2.36570),
-                (Vectors.sparse(3, {1: 1.0, 2: 6.0}), 1, -1.87988),
-                (Vectors.sparse(3, {1: 6.0, 2: 7.0}), 1, -0.30612),
-                (Vectors.sparse(3, {1: 8.0, 2: 10.5}), 1, 2.44826),
-            ],
-            ["features", "qid", "expected_prediction"],
         )
 
         self.reg_df_sparse_train = self.session.createDataFrame(
@@ -1007,6 +995,7 @@ class XgboostLocalTest(SparkTestCase):
         model = classifier.fit(self.cls_df_train)
         model.transform(self.cls_df_test).collect()
 
+    @pytest.mark.skipif(**no_sparse_unwrap())
     def test_regressor_with_sparse_optim(self):
         regressor = SparkXGBRegressor(missing=0.0)
         model = regressor.fit(self.reg_df_sparse_train)
@@ -1023,6 +1012,7 @@ class XgboostLocalTest(SparkTestCase):
         for row1, row2 in zip(pred_result, pred_result2):
             self.assertTrue(np.isclose(row1.prediction, row2.prediction, atol=1e-3))
 
+    @pytest.mark.skipif(**no_sparse_unwrap())
     def test_classifier_with_sparse_optim(self):
         cls = SparkXGBClassifier(missing=0.0)
         model = cls.fit(self.cls_df_sparse_train)
@@ -1038,15 +1028,6 @@ class XgboostLocalTest(SparkTestCase):
 
         for row1, row2 in zip(pred_result, pred_result2):
             self.assertTrue(np.allclose(row1.probability, row2.probability, rtol=1e-3))
-
-    def test_ranker(self):
-        ranker = SparkXGBRanker(qid_col="qid")
-        assert ranker.getOrDefault(ranker.objective) == "rank:pairwise"
-        model = ranker.fit(self.ranker_df_train)
-        pred_result = model.transform(self.ranker_df_test).collect()
-
-        for row in pred_result:
-            assert np.isclose(row.prediction, row.expected_prediction, rtol=1e-3)
 
     def test_empty_validation_data(self) -> None:
         for tree_method in [
@@ -1130,3 +1111,63 @@ class XgboostLocalTest(SparkTestCase):
     def test_unsupported_params(self):
         with pytest.raises(ValueError, match="evals_result"):
             SparkXGBClassifier(evals_result={})
+
+
+class XgboostRankerLocalTest(SparkTestCase):
+    def setUp(self):
+        self.session.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "8")
+        self.ranker_df_train = self.session.createDataFrame(
+            [
+                (Vectors.dense(1.0, 2.0, 3.0), 0, 0),
+                (Vectors.dense(4.0, 5.0, 6.0), 1, 0),
+                (Vectors.dense(9.0, 4.0, 8.0), 2, 0),
+                (Vectors.sparse(3, {1: 1.0, 2: 5.5}), 0, 1),
+                (Vectors.sparse(3, {1: 6.0, 2: 7.5}), 1, 1),
+                (Vectors.sparse(3, {1: 8.0, 2: 9.5}), 2, 1),
+            ],
+            ["features", "label", "qid"],
+        )
+        self.ranker_df_test = self.session.createDataFrame(
+            [
+                (Vectors.dense(1.5, 2.0, 3.0), 0, -1.87988),
+                (Vectors.dense(4.5, 5.0, 6.0), 0, 0.29556),
+                (Vectors.dense(9.0, 4.5, 8.0), 0, 2.36570),
+                (Vectors.sparse(3, {1: 1.0, 2: 6.0}), 1, -1.87988),
+                (Vectors.sparse(3, {1: 6.0, 2: 7.0}), 1, -0.30612),
+                (Vectors.sparse(3, {1: 8.0, 2: 10.5}), 1, 2.44826),
+            ],
+            ["features", "qid", "expected_prediction"],
+        )
+        self.ranker_df_train_1 = self.session.createDataFrame(
+            [
+                (Vectors.sparse(3, {1: 1.0, 2: 5.5}), 0, 9),
+                (Vectors.sparse(3, {1: 6.0, 2: 7.5}), 1, 9),
+                (Vectors.sparse(3, {1: 8.0, 2: 9.5}), 2, 9),
+                (Vectors.dense(1.0, 2.0, 3.0), 0, 8),
+                (Vectors.dense(4.0, 5.0, 6.0), 1, 8),
+                (Vectors.dense(9.0, 4.0, 8.0), 2, 8),
+                (Vectors.sparse(3, {1: 1.0, 2: 5.5}), 0, 7),
+                (Vectors.sparse(3, {1: 6.0, 2: 7.5}), 1, 7),
+                (Vectors.sparse(3, {1: 8.0, 2: 9.5}), 2, 7),
+                (Vectors.dense(1.0, 2.0, 3.0), 0, 6),
+                (Vectors.dense(4.0, 5.0, 6.0), 1, 6),
+                (Vectors.dense(9.0, 4.0, 8.0), 2, 6),
+            ]
+            * 4,
+            ["features", "label", "qid"],
+        )
+
+    def test_ranker(self):
+        ranker = SparkXGBRanker(qid_col="qid")
+        assert ranker.getOrDefault(ranker.objective) == "rank:pairwise"
+        model = ranker.fit(self.ranker_df_train)
+        pred_result = model.transform(self.ranker_df_test).collect()
+
+        for row in pred_result:
+            assert np.isclose(row.prediction, row.expected_prediction, rtol=1e-3)
+
+    def test_ranker_qid_sorted(self):
+        ranker = SparkXGBRanker(qid_col="qid", num_workers=4)
+        assert ranker.getOrDefault(ranker.objective) == "rank:pairwise"
+        model = ranker.fit(self.ranker_df_train_1)
+        model.transform(self.ranker_df_test).collect()
