@@ -36,12 +36,12 @@ try:
 
     PANDAS_INSTALLED = True
 except ImportError:
-
     MultiIndex = object
     DataFrame = object
     Series = object
     pandas_concat = None
     PANDAS_INSTALLED = False
+
 
 # sklearn
 try:
@@ -70,6 +70,22 @@ except ImportError:
 
     XGBKFold = None
     XGBStratifiedKFold = None
+
+
+_logger = logging.getLogger(__name__)
+
+
+def is_cudf_available() -> bool:
+    """Check cuDF package available or not"""
+    if importlib.util.find_spec("cudf") is None:
+        return False
+    try:
+        import cudf
+
+        return True
+    except ImportError:
+        _logger.exception("Importing cuDF failed, use DMatrix instead of QDM")
+        return False
 
 
 class XGBoostLabelEncoder(LabelEncoder):
@@ -143,6 +159,7 @@ def concat(value: Sequence[_T]) -> _T:  # pylint: disable=too-many-return-statem
 # Modified from tensorflow with added caching.  There's a `LazyLoader` in
 # `importlib.utils`, except it's unclear from its document on how to use it.  This one
 # seems to be easy to understand and works out of box.
+
 
 # Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 #
