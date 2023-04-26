@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.8"]
+        python-version: ["3.9"]
     steps:
     - uses: actions/checkout@v2
       with:
@@ -81,7 +81,7 @@ jobs:
     strategy:
       matrix:
         os: [macos-11, windows-latest]
-        python-version: ["3.8"]
+        python-version: ["3.9"]
     steps:
     - uses: actions/checkout@v2
       with:
@@ -118,7 +118,6 @@ jobs:
       matrix:
         config:
           - {os: macos-11}
-
     steps:
     - uses: actions/checkout@e2f20e631ae6d7dd3b768f56a5d2af784dd54791 # v2.5.0
       with:
@@ -168,8 +167,7 @@ jobs:
     strategy:
       matrix:
         config:
-          - {os: windows-latest, python-version: '3.8'}
-
+          - {os: windows-latest, python-version: '3.9'}
     steps:
     - uses: actions/checkout@v2
       with:

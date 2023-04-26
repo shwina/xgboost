@@ -70,7 +70,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.8"]
+        python-version: ["3.9"]
     steps:
     - uses: actions/checkout@v2
       with:
@@ -139,7 +139,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: "3.8"
+        python-version: "3.9"
         architecture: 'x64'
     - name: Install Python packages
       run: |
@@ -157,7 +157,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: "3.8"
+        python-version: "3.9"
         architecture: 'x64'
     - name: Install system packages
       run: |
@@ -194,7 +194,7 @@ jobs:
         submodules: 'true'
     - uses: actions/setup-python@v2
       with:
-        python-version: "3.8"
+        python-version: "3.9"
         architecture: 'x64'
     - name: Install system packages
       run: |
